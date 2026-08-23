@@ -1,10 +1,16 @@
 package wonton.abp.xposed
 
 import android.app.AppOpsManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.util.Log
+import java.io.File
 import androidx.annotation.RequiresApi
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
@@ -39,6 +45,10 @@ class XposedEntry : XposedModule() {
     @Volatile
     private var cachedPm: PackageManager? = null
 
+    /** Cached system_server context (ActivityThread.getSystemContext). */
+    @Volatile
+    private var cachedCtx: Context? = null
+
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         log(Log.INFO, TAG, "onModuleLoaded: ${param.processName}")
     }
@@ -48,6 +58,7 @@ class XposedEntry : XposedModule() {
         val cl = param.classLoader
         hookInstallPermission(cl)
         hookActivityStart(cl)
+        hookPackageInstallerSession(cl)
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
@@ -458,16 +469,20 @@ class XposedEntry : XposedModule() {
         null
     }
 
-    private fun systemPackageManager(): PackageManager? {
-        cachedPm?.let { return it }
+    private fun systemContext(): Context? {
+        cachedCtx?.let { return it }
         return runCatching {
             val atClass = Class.forName("android.app.ActivityThread")
             val systemThread = atClass.getMethod("currentActivityThread").invoke(null)
             val ctx = atClass.getMethod("getSystemContext")
-                .invoke(systemThread) as android.content.Context
-            ctx.packageManager.also { cachedPm = it }
+                .invoke(systemThread) as Context
+            cachedCtx = ctx
+            ctx
         }.getOrNull()
     }
+
+    private fun systemPackageManager(): PackageManager? =
+        systemContext()?.packageManager
 
     // ---------------------------------------------------------------------
     // Hook 2 (system_server): ACTION_INSTALL_PACKAGE intents launched by a
@@ -553,13 +568,314 @@ class XposedEntry : XposedModule() {
         if (installer.isBlank()) return
         // Don't override an explicit component / package already chosen.
         if (intent.`package` != null || intent.component != null) return
-        intent.setPackage(installer)
-        log(Log.INFO, TAG, "Redirected install intent from $caller to $installer")
+        val uri = intent.data
+        if (uri == null) {
+            // No APK to hand off; keep the legacy setPackage behavior.
+            intent.setPackage(installer)
+            log(Log.INFO, TAG, "Redirected install intent (no uri) from $caller to $installer")
+            return
+        }
+        // Route through our proxy so it can hand the APK to the installer via
+        // ACTION_VIEW and return EXTRA_INSTALL_RESULT to the caller.
+        intent.component = PROXY_COMPONENT
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.putExtra(EXTRA_ABP_INSTALLER, installer)
+        intent.putExtra(EXTRA_ABP_CALLER, caller)
+        log(Log.INFO, TAG, "Redirected install intent from $caller to proxy (installer=$installer)")
+    }
+
+    // ---------------------------------------------------------------------
+    // Hook 3 (system_server): PackageInstaller.Session installs for a selected
+    // app -> extract staged APK, ACTION_VIEW to the installer, poll, report.
+    //
+    // Apps that don't use ACTION_INSTALL_PACKAGE create an install session via
+    // PackageInstaller and call Session.commit(IntentSender). Under Advanced
+    // Protection the session's confirmation flow ends in the "restricted"
+    // dialog, so we intercept commit centrally in system_server, copy the
+    // staged APK into our app's cache, hand it to the configured installer via
+    // ACTION_VIEW, then poll PackageManager and synthesize the terminal status
+    // back through the session's IntentSender status receiver.
+    // ---------------------------------------------------------------------
+
+    private fun hookPackageInstallerSession(cl: ClassLoader) {
+        val clazz = runCatching {
+            cl.loadClass("com.android.server.pm.PackageInstallerSession")
+        }.getOrNull() ?: run {
+            log(Log.WARN, TAG, "PackageInstallerSession class not found")
+            return
+        }
+
+        var hooked = 0
+        for (m in clazz.declaredMethods) {
+            if (m.name != "commit") continue
+            val params = m.parameterTypes
+            if (params.size != 2) continue
+            if (params[0] != IntentSender::class.java) continue
+            if (params[1] != Boolean::class.javaPrimitiveType) continue
+            if (m.returnType != Void.TYPE) continue
+
+            runCatching {
+                hook(m).intercept { chain ->
+                    var handled = false
+                    try {
+                        val session = chain.getThisObject()
+                        if (session != null) {
+                            val installer = sessionInstallerPackage(session)
+                            if (installer != null && installer != OWN_PACKAGE && isSelected(installer)) {
+                                handled = true
+                                log(Log.INFO, TAG, "Intercepting session commit from selected app $installer")
+                                proxySessionInstall(session, installer)
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        log(Log.WARN, TAG, "PackageInstallerSession.commit intercept failed", t)
+                    }
+                    if (handled) null else chain.proceed()
+                }
+                hooked++
+                log(Log.INFO, TAG, "Hooked PackageInstallerSession.commit")
+            }.onFailure {
+                log(Log.WARN, TAG, "PackageInstallerSession.commit hook failed", it)
+            }
+        }
+        if (hooked == 0) {
+            log(Log.WARN, TAG, "No PackageInstallerSession.commit method hooked")
+        }
+
+        // Swallow requestUserPreapproval for selected installers so the
+        // pre-approval dialog never appears.
+        for (m in clazz.declaredMethods) {
+            if (m.name != "requestUserPreapproval") continue
+            runCatching {
+                hook(m).intercept { chain ->
+                    var handled = false
+                    try {
+                        val session = chain.getThisObject()
+                        if (session != null) {
+                            val installer = sessionInstallerPackage(session)
+                            if (installer != null && installer != OWN_PACKAGE && isSelected(installer)) {
+                                handled = true
+                                log(Log.INFO, TAG, "Swallowing requestUserPreapproval from $installer")
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        log(Log.WARN, TAG, "requestUserPreapproval intercept failed", t)
+                    }
+                    if (handled) null else chain.proceed()
+                }
+                log(Log.INFO, TAG, "Hooked PackageInstallerSession.requestUserPreapproval")
+            }.onFailure {
+                log(Log.WARN, TAG, "requestUserPreapproval hook failed", it)
+            }
+        }
+    }
+
+    /**
+     * Replaces a selected app's session install with an ACTION_VIEW hand-off to
+     * the configured installer. Fast path runs on the Binder thread (read the
+     * staged APK path + receiver); the copy/launch/poll/report runs on a
+     * background thread so the commit Binder call returns immediately.
+     */
+    private fun proxySessionInstall(session: Any, installer: String) {
+        val ctx = systemContext()
+        val receiver = sessionRemoteStatusReceiver(session)
+        val baseApk = sessionBaseApk(session)
+        if (ctx == null || receiver == null || baseApk == null) {
+            log(Log.WARN, TAG, "Cannot proxy session install (ctx=$ctx receiver=$receiver apk=$baseApk)")
+            sendSessionStatus(session, null, false, "unable to stage apk")
+            return
+        }
+        val archive = runCatching {
+            ctx.packageManager.getPackageArchiveInfo(baseApk.absolutePath, 0)
+        }.getOrNull()
+        val pkg = archive?.packageName
+        val version = archive?.longVersionCode ?: 0L
+        val sid = sessionId(session)
+        if (pkg == null) {
+            sendSessionStatus(session, null, false, "could not parse staged apk")
+            return
+        }
+
+        Thread {
+            try {
+                val copied = copyApkForInstaller(ctx, baseApk, sid)
+                if (copied == null) {
+                    sendSessionStatus(session, pkg, false, "failed to stage apk")
+                    return@Thread
+                }
+                if (!launchInstallerViaView(ctx, copied, installer)) {
+                    sendSessionStatus(session, pkg, false, "installer $installer unavailable")
+                    return@Thread
+                }
+                // Release the original staged session; our copy is independent.
+                sessionAbandon(session)
+                val success = pollPackageInstalled(ctx, pkg, version)
+                sendSessionStatus(
+                    session, pkg, success,
+                    if (success) "Success" else "Install failed or timed out"
+                )
+            } catch (t: Throwable) {
+                log(Log.WARN, TAG, "proxySessionInstall failed", t)
+                sendSessionStatus(session, pkg, false, "internal error")
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    private fun sessionInstallerPackage(session: Any): String? {
+        val direct = runCatching {
+            val m = session.javaClass.getDeclaredMethod("getInstallerPackageName")
+            m.isAccessible = true
+            m.invoke(session) as? String
+        }.getOrNull()
+        if (direct != null) return direct
+        // Fallback: getInstallSource().mInstallerPackageName
+        return runCatching {
+            val g = session.javaClass.getDeclaredMethod("getInstallSource")
+            g.isAccessible = true
+            val src = g.invoke(session) ?: return@runCatching null
+            val f = src.javaClass.getDeclaredField("mInstallerPackageName")
+            f.isAccessible = true
+            f.get(src) as? String
+        }.getOrNull()
+    }
+
+    private fun sessionStageDir(session: Any): File? = runCatching {
+        val f = session.javaClass.getDeclaredField("stageDir")
+        f.isAccessible = true
+        f.get(session) as? File
+    }.getOrNull()
+
+    private fun sessionBaseApk(session: Any): File? {
+        val dir = sessionStageDir(session) ?: return null
+        if (!dir.isDirectory) return null
+        val base = File(dir, "base.apk")
+        if (base.isFile) return base
+        return dir.listFiles { f -> f.isFile && f.name.endsWith(".apk") }
+            ?.maxByOrNull { it.length() }
+    }
+
+    private fun sessionId(session: Any): Int = runCatching {
+        val f = session.javaClass.getDeclaredField("sessionId")
+        f.isAccessible = true
+        f.getInt(session)
+    }.getOrDefault(-1)
+
+    private fun sessionRemoteStatusReceiver(session: Any): IntentSender? = runCatching {
+        val m = session.javaClass.getDeclaredMethod("getRemoteStatusReceiver")
+        m.isAccessible = true
+        m.invoke(session) as? IntentSender
+    }.getOrNull()
+
+    private fun sessionAbandon(session: Any) {
+        runCatching {
+            val m = session.javaClass.getDeclaredMethod("abandon")
+            m.isAccessible = true
+            m.invoke(session)
+        }
+    }
+
+    /**
+     * Copies a staged APK into our app's cache (`cache/apks/`) so the
+     * FileProvider can serve it to the installer via a content:// URI. The
+     * cache dir is made world-accessible by the app at startup.
+     */
+    private fun copyApkForInstaller(ctx: Context, src: File, sid: Int): File? = try {
+        val dataDir = runCatching {
+            ctx.packageManager.getApplicationInfo(OWN_PACKAGE, 0).dataDir
+        }.getOrNull() ?: return null
+        val apksDir = File(dataDir, "cache/apks")
+        apksDir.mkdirs()
+        apksDir.setReadable(true, false)
+        apksDir.setExecutable(true, false)
+        apksDir.setWritable(true, false)
+        val out = File(apksDir, "session-$sid.apk")
+        src.inputStream().use { input -> out.outputStream().use { o -> input.copyTo(o) } }
+        out.setReadable(true, false)
+        out
+    } catch (t: Throwable) {
+        log(Log.WARN, TAG, "copyApkForInstaller failed", t)
+        null
+    }
+
+    private fun launchInstallerViaView(ctx: Context, apk: File, installer: String): Boolean = try {
+        val uri = Uri.parse("content://$FILEPROVIDER_AUTHORITY/apks/${apk.name}")
+        val i = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, INSTALLER_VIEW_MIME)
+            .setPackage(installer)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        ctx.startActivity(i)
+        true
+    } catch (t: Throwable) {
+        log(Log.WARN, TAG, "launchInstallerViaView failed for $installer", t)
+        false
+    }
+
+    private fun pollPackageInstalled(ctx: Context, pkg: String, version: Long): Boolean {
+        val pm = ctx.packageManager
+        val deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(POLL_INTERVAL_MS)
+            } catch (e: InterruptedException) {
+                return false
+            }
+            val info = runCatching { pm.getPackageInfo(pkg, 0) }.getOrNull()
+            if (info != null && (version == 0L || info.longVersionCode >= version)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Synthesizes the terminal status the system would normally deliver via
+     * `sendOnPackageInstalled`, using the session's IntentSender status
+     * receiver.
+     */
+    private fun sendSessionStatus(session: Any, pkg: String?, success: Boolean, msg: String) {
+        val receiver = sessionRemoteStatusReceiver(session) ?: return
+        val ctx = systemContext() ?: return
+        val sid = sessionId(session)
+        val fillIn = Intent().apply {
+            putExtra(PackageInstaller.EXTRA_SESSION_ID, sid)
+            putExtra(
+                PackageInstaller.EXTRA_STATUS,
+                if (success) PackageInstaller.STATUS_SUCCESS else PackageInstaller.STATUS_FAILURE
+            )
+            putExtra(PackageInstaller.EXTRA_STATUS_MESSAGE, msg)
+            // PackageInstaller.EXTRA_LEGACY_STATUS is @hide; its stable value is
+            // "android.content.pm.extra.LEGACY_STATUS". The legacy status is a
+            // PackageManager.INSTALL_* code (INSTALL_SUCCEEDED=1,
+            // INSTALL_FAILED_INTERNAL_ERROR=-110), also @hide in the SDK stubs.
+            putExtra(
+                EXTRA_LEGACY_STATUS,
+                if (success) 1 else -110
+            )
+            if (pkg != null) putExtra(PackageInstaller.EXTRA_PACKAGE_NAME, pkg)
+        }
+        runCatching {
+            receiver.sendIntent(ctx, 0, fillIn, null, null, null, null)
+        }.onFailure {
+            log(Log.WARN, TAG, "sendSessionStatus failed", it)
+        }.onSuccess {
+            log(Log.INFO, TAG, "Session $sid status=${if (success) "SUCCESS" else "FAILURE"} ($msg)")
+        }
     }
 
     companion object {
         private const val TAG = "ABP"
         private const val OWN_PACKAGE = "wonton.abp"
+
+        private val PROXY_COMPONENT =
+            ComponentName(OWN_PACKAGE, "wonton.abp.install.InstallProxyActivity")
+        private const val FILEPROVIDER_AUTHORITY = "wonton.abp.fileprovider"
+        private const val EXTRA_ABP_INSTALLER = "wonton.abp.extra.INSTALLER"
+        private const val EXTRA_ABP_CALLER = "wonton.abp.extra.CALLER"
+        // PackageInstaller.EXTRA_LEGACY_STATUS (@hide): stable string value.
+        private const val EXTRA_LEGACY_STATUS = "android.content.pm.extra.LEGACY_STATUS"
+        private const val INSTALLER_VIEW_MIME = "application/vnd.android.package-archive"
+        private const val POLL_INTERVAL_MS = 2000L
+        private const val POLL_TIMEOUT_MS = 120_000L
 
         // AppOpsManager.OP_REQUEST_INSTALL_PACKAGES is @hide; its stable value is 66.
         private const val OP_REQUEST_INSTALL_PACKAGES = 66

@@ -5,4 +5,11 @@
       the per-app language APIs). DayNight follows the system light/dark setting.
     -->
     <style name="Theme.ABP" parent="Theme.AppCompat.DayNight.NoActionBar" />
+
+    <!--
+      Invisible theme for InstallProxyActivity. The proxy is a plain Activity
+      (no Compose/AppCompat) and never draws any UI, so the platform translucent
+      theme is enough.
+    -->
+    <style name="Theme.ABP.Transparent" parent="@android:style/Theme.Translucent.NoTitleBar" />
 </resources>

@@ -216,8 +216,10 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when {
-                state.loading -> LoadingView()
+                // Home tab: status is derived synchronously, nothing to load.
                 selectedTab == 0 -> StatusScreen(state)
+                // App list still needs the (potentially slow) package scan.
+                state.loading -> LoadingView()
                 else -> AppList(
                     apps = visibleApps,
                     selected = state.selected,

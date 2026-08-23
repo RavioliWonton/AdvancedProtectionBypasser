@@ -61,6 +61,34 @@
             android:authorities="${applicationId}.XposedService"
             android:exported="true"
             tools:ignore="ExportedContentProvider" />
+
+        <!--
+          ACTION_INSTALL_PACKAGE proxy (Task 2-A). The module (in system_server)
+          redirects a selected app's ACTION_INSTALL_PACKAGE intent to this
+          invisible activity. It hands the APK to the configured installer via
+          ACTION_VIEW and, when the caller set EXTRA_RETURN_RESULT, polls
+          PackageManager and returns EXTRA_INSTALL_RESULT to the caller.
+        -->
+        <activity
+            android:name=".install.InstallProxyActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.ABP.Transparent"
+            tools:ignore="ExportedActivity" />
+
+        <!--
+          Serves the APKs the module stages (into cache/apks/) to the configured
+          installer through a content:// URI + FLAG_GRANT_READ_URI_PERMISSION.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>
