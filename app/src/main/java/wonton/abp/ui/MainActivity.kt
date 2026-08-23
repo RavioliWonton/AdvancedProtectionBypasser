@@ -1,0 +1,435 @@
+package wonton.abp.ui
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.core.graphics.drawable.toBitmap
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import wonton.abp.R
+import wonton.abp.data.AppInfo
+import wonton.abp.ui.theme.ABPTheme
+
+class MainActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            ABPTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    MainScreen()
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MainScreen(vm: MainViewModel = viewModel()) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val apps by vm.apps.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showInstallerDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+                actions = {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = stringResource(R.string.menu_more),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_configure_installer)) },
+                            onClick = {
+                                menuExpanded = false
+                                showInstallerDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_select_all_installers)) },
+                            onClick = {
+                                menuExpanded = false
+                                vm.selectAllInstallers()
+                            },
+                        )
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_language)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    openAppLanguageSettings(context)
+                                },
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_about)) },
+                            onClick = {
+                                menuExpanded = false
+                                showAboutDialog = true
+                            },
+                        )
+                    }
+                },
+            )
+        },
+    ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            when {
+                state.loading -> LoadingView()
+                else -> AppList(
+                    apps = apps,
+                    selected = state.selected,
+                    moduleActive = state.moduleActive,
+                    selectedCount = state.selected.size,
+                    onToggle = vm::toggle,
+                )
+            }
+        }
+    }
+
+    if (showInstallerDialog) {
+        InstallerConfigDialog(
+            initialValue = state.installerPackage,
+            onConfirm = {
+                vm.setInstallerPackage(it)
+                showInstallerDialog = false
+            },
+            onDismiss = { showInstallerDialog = false },
+        )
+    }
+
+    if (showAboutDialog) {
+        AboutDialog(onDismiss = { showAboutDialog = false })
+    }
+}
+
+/**
+ * Opens the system "Per-app language preferences" screen for this app
+ * (Settings > System > Languages > App languages > <app>). Available on
+ * Android 13 (API 33+). Falls back to the generic app details page if the
+ * dedicated screen cannot be resolved.
+ */
+private fun openAppLanguageSettings(context: android.content.Context) {
+    val pkgUri = Uri.fromParts("package", context.packageName, null)
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Intent(Settings.ACTION_APP_LOCALE_SETTINGS, pkgUri)
+    } else {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri)
+    }
+    runCatching { context.startActivity(intent) }.onFailure {
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri)
+            )
+        }
+    }
+}
+
+@Composable
+private fun LoadingView() {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        CircularProgressIndicator()
+        Spacer(Modifier.height(16.dp))
+        Text(stringResource(R.string.loading))
+    }
+}
+
+@Composable
+private fun AppList(
+    apps: List<AppInfo>,
+    selected: Set<String>,
+    moduleActive: Boolean,
+    selectedCount: Int,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    val installers = apps.filter { it.requestsInstallPermission }
+    val others = apps.filterNot { it.requestsInstallPermission }
+
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        if (!moduleActive) {
+            item { ModuleInactiveBanner() }
+        }
+        item {
+            Text(
+                text = stringResource(R.string.selected_count, selectedCount),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            )
+        }
+
+        if (installers.isNotEmpty()) {
+            item { SectionHeader(stringResource(R.string.section_installers)) }
+            items(installers, key = { it.packageName }) { app ->
+                AppRow(app, app.packageName in selected, onToggle)
+            }
+        }
+
+        if (others.isNotEmpty()) {
+            item { SectionHeader(stringResource(R.string.section_others)) }
+            items(others, key = { it.packageName }) { app ->
+                AppRow(app, app.packageName in selected, onToggle)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModuleInactiveBanner() {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.module_inactive_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.module_inactive_desc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+    )
+}
+
+@Composable
+private fun AppRow(
+    app: AppInfo,
+    checked: Boolean,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AppIcon(app)
+        Spacer(Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = app.label,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = app.packageName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Checkbox(
+            checked = checked,
+            onCheckedChange = { onToggle(app.packageName, it) },
+        )
+    }
+}
+
+@Composable
+private fun AppIcon(app: AppInfo) {
+    val drawable = app.icon
+    if (drawable != null) {
+        val bitmap = remember(app.packageName) {
+            runCatching { drawable.toBitmap(96, 96) }.getOrNull()
+        }
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = app.label,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(10.dp)),
+            )
+            return
+        }
+    }
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(10.dp)),
+    )
+}
+
+// -------------------------------------------------------------------------
+// Compose previews
+//
+// MainScreen() pulls its state from a ViewModel (and ultimately the Xposed
+// remote service), which is unavailable in the preview renderer. We therefore
+// preview the stateless building blocks with hand-crafted sample data so the
+// layout can be inspected in the IDE without a device.
+// -------------------------------------------------------------------------
+
+private val sampleApps = listOf(
+    AppInfo(
+        packageName = "com.android.vending",
+        label = "Google Play Store",
+        icon = null,
+        requestsInstallPermission = true,
+        isSystem = true,
+    ),
+    AppInfo(
+        packageName = "com.example.browser",
+        label = "Sample Browser",
+        icon = null,
+        requestsInstallPermission = true,
+        isSystem = false,
+    ),
+    AppInfo(
+        packageName = "com.example.notes",
+        label = "Sample Notes",
+        icon = null,
+        requestsInstallPermission = false,
+        isSystem = false,
+    ),
+)
+
+@Preview(name = "App list (module active)", showBackground = true)
+@Composable
+private fun AppListPreview() {
+    ABPTheme {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            AppList(
+                apps = sampleApps,
+                selected = setOf("com.example.browser"),
+                moduleActive = true,
+                selectedCount = 1,
+                onToggle = { _, _ -> },
+            )
+        }
+    }
+}
+
+@Preview(name = "App list (module inactive)", showBackground = true)
+@Composable
+private fun AppListInactivePreview() {
+    ABPTheme {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            AppList(
+                apps = sampleApps,
+                selected = emptySet(),
+                moduleActive = false,
+                selectedCount = 0,
+                onToggle = { _, _ -> },
+            )
+        }
+    }
+}
+
+@Preview(name = "App list (dark)", showBackground = true)
+@Composable
+private fun AppListDarkPreview() {
+    ABPTheme(darkTheme = true) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            AppList(
+                apps = sampleApps,
+                selected = setOf("com.android.vending"),
+                moduleActive = true,
+                selectedCount = 1,
+                onToggle = { _, _ -> },
+            )
+        }
+    }
+}

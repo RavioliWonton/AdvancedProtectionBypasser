@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">Advanced Protection Bypasser</string>
+
+    <!-- Overflow menu -->
+    <string name="menu_configure_installer">Configure default installer</string>
+    <string name="menu_select_all_installers">Select all apps with install permission</string>
+    <string name="menu_language">App language</string>
+    <string name="menu_about">About</string>
+
+    <!-- Installer config dialog -->
+    <string name="installer_dialog_title">Configure default installer</string>
+    <string name="installer_dialog_hint">Installer package name</string>
+    <string name="installer_dialog_desc">The ACTION_INSTALL_PACKAGE intent of selected apps will have setPackage(this package) appended.</string>
+    <string name="default_installer">moe.shizuku.installer</string>
+
+    <!-- About dialog -->
+    <string name="about_message">Advanced Protection Bypasser\n\nAn open-source Xposed module + Jetpack Compose app.\n\nForce-grants install permission to selected apps and redirects their install intents to a configurable installer.\n\nThis project is open-source software.</string>
+
+    <!-- Common -->
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="close">Close</string>
+    <string name="reset">Reset</string>
+    <string name="section_installers">Apps with install permission</string>
+    <string name="section_others">Other apps</string>
+    <string name="badge_install_perm">Install permission</string>
+    <string name="loading">Loading installed apps…</string>
+
+    <!-- Module state -->
+    <string name="module_inactive_title">Module not activated</string>
+    <string name="module_inactive_desc">Enable this module in the LSPosed manager and select its scope. The configuration takes effect after a reboot.</string>
+    <string name="menu_more">More</string>
+    <string name="selected_count">%1$d app(s) selected</string>
+</resources>

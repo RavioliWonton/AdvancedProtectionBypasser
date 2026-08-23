@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares the locales this app supports so Android's system
+  "Per-app language preferences" (Settings > System > Languages > App languages,
+  API 33+) can list them. English is the default/base locale.
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="zh-CN" />
+    <locale android:name="zh-TW" />
+</locale-config>

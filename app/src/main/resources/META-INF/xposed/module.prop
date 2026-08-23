@@ -1,0 +1,7 @@
+id=wonton.abp
+name=Advanced Protection Bypasser
+author=wonton
+description=Force-grants install permission and redirects install intents for selected apps.
+minApiVersion=102
+targetApiVersion=102
+staticScope=true

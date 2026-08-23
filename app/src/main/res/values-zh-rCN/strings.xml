@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">Advanced Protection Bypasser</string>
+
+    <!-- Overflow menu -->
+    <string name="menu_configure_installer">配置默认安装器</string>
+    <string name="menu_select_all_installers">全选拥有安装权限的所有应用</string>
+    <string name="menu_language">应用语言</string>
+    <string name="menu_about">关于</string>
+
+    <!-- Installer config dialog -->
+    <string name="installer_dialog_title">配置默认安装器</string>
+    <string name="installer_dialog_hint">安装器包名</string>
+    <string name="installer_dialog_desc">被选中应用的 ACTION_INSTALL_PACKAGE 意图会被追加 setPackage(此包名)。</string>
+    <string name="default_installer">moe.shizuku.installer</string>
+
+    <!-- About dialog -->
+    <string name="about_message">Advanced Protection Bypasser\n\n一个开源的 Xposed 模块 + Jetpack Compose 应用。\n\n为选中的应用强制授予安装权限，并将其安装意图重定向到指定安装器。\n\n本项目为开源软件。</string>
+
+    <!-- Common -->
+    <string name="ok">确定</string>
+    <string name="cancel">取消</string>
+    <string name="close">关闭</string>
+    <string name="reset">重置</string>
+    <string name="section_installers">拥有安装权限的应用</string>
+    <string name="section_others">其他应用</string>
+    <string name="badge_install_perm">安装权限</string>
+    <string name="loading">正在加载已安装应用…</string>
+
+    <!-- Module state -->
+    <string name="module_inactive_title">模块未激活</string>
+    <string name="module_inactive_desc">请在 LSPosed 管理器中启用本模块并勾选作用域，重启后配置才会生效。</string>
+    <string name="menu_more">更多</string>
+    <string name="selected_count">已选择 %1$d 个应用</string>
+</resources>

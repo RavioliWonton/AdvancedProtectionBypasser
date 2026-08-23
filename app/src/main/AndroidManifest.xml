@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      We query installed packages to build the app list and to read their
+      requested permissions (REQUEST_INSTALL_PACKAGES).
+    -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ABP">
+
+        <!--
+          The icon is intentionally hidden from the launcher: this activity has
+          NO CATEGORY_LAUNCHER. Instead it declares the MODULE_SETTINGS category
+          so the LSPosed manager can resolve and open it
+          (AppHelper.getSettingsIntent -> ACTION_MAIN + MODULE_SETTINGS).
+        -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Required by libxposed:service. The manager calls into this provider
+          (SEND_BINDER) to hand the module the XposedService binder so that
+          XposedServiceHelper.OnServiceListener.onServiceBind is invoked and
+          remote preferences / scope APIs become available.
+        -->
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            android:authorities="${applicationId}.XposedService"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+
+</manifest>

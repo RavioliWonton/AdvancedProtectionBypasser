@@ -1,0 +1,4 @@
+<resources>
+    <!-- Base theme for the activity before Compose takes over. -->
+    <style name="Theme.ABP" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
