@@ -1,4 +1,8 @@
 <resources>
-    <!-- Base theme for the activity before Compose takes over. -->
-    <style name="Theme.ABP" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+      Base theme for the activity before Compose takes over. Must descend from a
+      Theme.AppCompat theme because MainActivity extends AppCompatActivity (for
+      the per-app language APIs). DayNight follows the system light/dark setting.
+    -->
+    <style name="Theme.ABP" parent="Theme.AppCompat.DayNight.NoActionBar" />
 </resources>

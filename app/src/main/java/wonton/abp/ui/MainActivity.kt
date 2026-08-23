@@ -1,14 +1,10 @@
 package wonton.abp.ui
 
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,8 +20,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -34,9 +32,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -55,13 +55,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import wonton.abp.R
 import wonton.abp.data.AppInfo
 import wonton.abp.ui.theme.ABPTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,11 +85,16 @@ class MainActivity : ComponentActivity() {
 private fun MainScreen(vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
-    val context = LocalContext.current
 
     var menuExpanded by remember { mutableStateOf(false) }
     var showInstallerDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showLanguageDialog by remember { mutableStateOf(false) }
+    // System apps are hidden by default on every launch; this state is
+    // intentionally not persisted.
+    var showSystemApps by remember { mutableStateOf(false) }
+
+    val visibleApps = if (showSystemApps) apps else apps.filterNot { it.isSystem }
 
     Scaffold(
         topBar = {
@@ -129,15 +135,27 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                                 vm.selectAllInstallers()
                             },
                         )
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_language)) },
-                                onClick = {
-                                    menuExpanded = false
-                                    openAppLanguageSettings(context)
-                                },
-                            )
-                        }
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    stringResource(
+                                        if (showSystemApps) R.string.menu_hide_system_apps
+                                        else R.string.menu_show_system_apps
+                                    )
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                showSystemApps = !showSystemApps
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_language)) },
+                            onClick = {
+                                menuExpanded = false
+                                showLanguageDialog = true
+                            },
+                        )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_about)) },
                             onClick = {
@@ -154,7 +172,7 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
             when {
                 state.loading -> LoadingView()
                 else -> AppList(
-                    apps = apps,
+                    apps = visibleApps,
                     selected = state.selected,
                     moduleActive = state.moduleActive,
                     selectedCount = state.selected.size,
@@ -178,44 +196,76 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
     if (showAboutDialog) {
         AboutDialog(onDismiss = { showAboutDialog = false })
     }
+
+    if (showLanguageDialog) {
+        LanguageDialog(onDismiss = { showLanguageDialog = false })
+    }
 }
 
 /**
- * Opens the system "Per-app language preferences" screen for this app
- * (Settings > System > Languages > App languages > <app>). Available on
- * Android 13 (API 33+). Falls back to the generic app details page if the
- * dedicated screen cannot be resolved.
+ * In-app per-app language picker following the official Android guidance
+ * (developer.android.com/guide/topics/resources/app-languages). Uses the
+ * AndroidX AppCompat back-compat API [AppCompatDelegate.setApplicationLocales],
+ * which syncs with the system per-app language setting on Android 13+ and is
+ * persisted by AppCompat (autoStoreLocales) on Android 12 and lower. Selecting
+ * a locale recreates the activity so Compose recomposes with the new resources.
  */
-private fun openAppLanguageSettings(context: android.content.Context) {
-    val pkgUri = Uri.fromParts("package", context.packageName, null)
+@Composable
+private fun LanguageDialog(onDismiss: () -> Unit) {
+    // "" represents "follow system" (empty locale list).
+    val options = listOf(
+        "" to stringResource(R.string.language_system_default),
+        "en" to stringResource(R.string.language_english),
+        "zh-CN" to stringResource(R.string.language_zh_cn),
+        "zh-TW" to stringResource(R.string.language_zh_tw),
+    )
+    val current = AppCompatDelegate.getApplicationLocales()
+    val currentTag = current.get(0)?.toLanguageTag() ?: ""
+    // Normalise e.g. "zh-Hans-CN" -> match by language+region prefix.
+    val selectedTag = options.map { it.first }.firstOrNull { tag ->
+        tag.isNotEmpty() && currentTag.startsWith(tag, ignoreCase = true)
+    } ?: ""
 
-    // Candidate intents, in order of preference. Some OEMs (e.g. Huawei /
-    // HarmonyOS) don't implement ACTION_APP_LOCALE_SETTINGS, so we fall back
-    // to the generic app-details page, and finally to the global locale list.
-    val candidates = buildList {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            add(Intent(Settings.ACTION_APP_LOCALE_SETTINGS, pkgUri))
-        }
-        add(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri))
-        add(Intent(Settings.ACTION_LOCALE_SETTINGS))
-    }
-
-    val pm = context.packageManager
-    for (intent in candidates) {
-        // Adding NEW_TASK is required because `context` may not be an Activity
-        // (e.g. the application context supplied by Compose in some cases).
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (intent.resolveActivity(pm) != null) {
-            val launched = runCatching { context.startActivity(intent) }.isSuccess
-            if (launched) return
-        }
-    }
-
-    Toast.makeText(
-        context,
-        context.getString(R.string.language_settings_unavailable),
-        Toast.LENGTH_SHORT,
-    ).show()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.language_dialog_title)) },
+        text = {
+            Column {
+                options.forEach { (tag, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = tag == selectedTag,
+                                onClick = {
+                                    val locales = if (tag.isEmpty()) {
+                                        LocaleListCompat.getEmptyLocaleList()
+                                    } else {
+                                        LocaleListCompat.forLanguageTags(tag)
+                                    }
+                                    AppCompatDelegate.setApplicationLocales(locales)
+                                    onDismiss()
+                                },
+                            )
+                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = tag == selectedTag,
+                            onClick = null,
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(label, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.close))
+            }
+        },
+    )
 }
 
 @Composable

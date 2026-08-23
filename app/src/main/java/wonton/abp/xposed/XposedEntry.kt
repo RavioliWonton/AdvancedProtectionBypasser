@@ -18,10 +18,12 @@ import wonton.abp.common.Prefs
  * The module is scoped to `system` (system_server) only. All interception
  * happens centrally in system_server, differentiated by the *calling*
  * (source) applicationId:
- *  1. Forces install-permission checks to report "granted" for selected apps
- *     by hooking the in-system resolvers (`AppOpsService` for
- *     `OP_REQUEST_INSTALL_PACKAGES` and `PermissionManagerService` for
- *     `REQUEST_INSTALL_PACKAGES`), keyed on the caller's package/uid.
+ *  1. Forces install-permission checks to report "granted" for selected apps.
+ *     `REQUEST_INSTALL_PACKAGES` is an appop-backed permission, so the decision
+ *     is made in two places that we hook: the top-level Binder gate
+ *     `PackageManagerService.canRequestPackageInstalls(...)` and the underlying
+ *     `AppOpsService.checkOperation(...)` it (and `checkOpNoThrow`) funnel into,
+ *     keyed on the caller's package/uid.
  *  2. Rewrites `Intent.ACTION_INSTALL_PACKAGE` intents launched by a selected
  *     app to target a configured installer package (default
  *     `moe.shizuku.installer`) via `setPackage(...)`. This is done in the
@@ -86,8 +88,61 @@ class XposedEntry : XposedModule() {
     // ---------------------------------------------------------------------
 
     private fun hookInstallPermission(cl: ClassLoader) {
+        // Order matters only for logging; both gates are independent.
+        hookCanRequestPackageInstalls(cl)
         hookAppOpsService(cl)
-        hookPermissionManagerService(cl)
+    }
+
+    /**
+     * Hooks `PackageManagerService.canRequestPackageInstalls(String packageName,
+     * int userId)` so it returns `true` for selected callers.
+     *
+     * This is the highest-level, most reliable gate: apps that redirect users to
+     * `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` (like Huawei AppGallery)
+     * decide by calling `PackageManager.canRequestPackageInstalls()`, which is
+     * this exact Binder method. Hooking here bypasses any OEM-specific internals
+     * that may not funnel through the standard `AppOpsService.checkOperation`.
+     *
+     * On Android 13+ the Binder entry point lives on the inner class
+     * `PackageManagerService$IPackageManagerImpl`; we hook every class that
+     * declares a `canRequestPackageInstalls` method just to be safe.
+     */
+    private fun hookCanRequestPackageInstalls(cl: ClassLoader) {
+        val candidates = listOf(
+            "com.android.server.pm.PackageManagerService",
+            "com.android.server.pm.PackageManagerService\$IPackageManagerImpl",
+            "com.android.server.pm.IPackageManagerImpl",
+            "com.android.server.pm.PackageManagerServiceImpl",
+        )
+        var hooked = 0
+        for (name in candidates) {
+            val clazz = runCatching { cl.loadClass(name) }.getOrNull() ?: continue
+            for (m in clazz.declaredMethods) {
+                if (m.name != "canRequestPackageInstalls") continue
+                if (m.returnType != Boolean::class.javaPrimitiveType) continue
+                val params = m.parameterTypes
+                val pkgIndex = params.indexOfFirst { it == String::class.java }
+                if (pkgIndex < 0) continue
+
+                runCatching {
+                    hook(m).intercept { chain ->
+                        val pkg = chain.getArg(pkgIndex) as? String
+                        if (pkg != null && pkg != OWN_PACKAGE && isSelected(pkg)) {
+                            log(Log.INFO, TAG, "canRequestPackageInstalls($pkg) -> forced true")
+                            return@intercept true
+                        }
+                        chain.proceed()
+                    }
+                    hooked++
+                    log(Log.INFO, TAG, "Hooked ${clazz.simpleName}.canRequestPackageInstalls(${params.size} args)")
+                }.onFailure {
+                    log(Log.WARN, TAG, "${clazz.simpleName}.canRequestPackageInstalls hook failed", it)
+                }
+            }
+        }
+        if (hooked == 0) {
+            log(Log.WARN, TAG, "No canRequestPackageInstalls method hooked")
+        }
     }
 
     /**
@@ -159,54 +214,6 @@ class XposedEntry : XposedModule() {
         log(Log.INFO, TAG, "Hooked AppOpsService op checks ($hooked methods)")
         if (hooked == 0) {
             log(Log.ERROR, TAG, "No AppOpsService op-check methods hooked (method names mismatch?)")
-        }
-    }
-
-    /**
-     * Hooks the permission resolver so that `REQUEST_INSTALL_PACKAGES` reports
-     * granted for selected callers. Targets
-     * `com.android.server.pm.permission.PermissionManagerServiceImpl`
-     * (and older variants) `checkPermission`/`checkUidPermission`.
-     */
-    private fun hookPermissionManagerService(cl: ClassLoader) {
-        val candidates = listOf(
-            "com.android.server.pm.permission.PermissionManagerServiceImpl",
-            "com.android.server.pm.permission.PermissionManagerService",
-        )
-        val clazz = candidates.firstNotNullOfOrNull { name ->
-            runCatching { cl.loadClass(name) }.getOrNull()
-        } ?: run {
-            log(Log.WARN, TAG, "PermissionManagerService class not found")
-            return
-        }
-
-        var hooked = 0
-        for (m in clazz.declaredMethods) {
-            if (m.name != "checkPermission" && m.name != "checkUidPermission") continue
-            val params = m.parameterTypes
-            // First arg is the permission name String on both signatures.
-            if (params.isEmpty() || params[0] != String::class.java) continue
-
-            val pkgIndex = (1 until params.size).firstOrNull { params[it] == String::class.java } ?: -1
-            val uidIndex = params.indexOfFirst { it == Int::class.javaPrimitiveType }
-
-            runCatching {
-                hook(m).intercept { chain ->
-                    if (chain.getArg(0) == PERM_REQUEST_INSTALL) {
-                        val pkg = if (pkgIndex >= 0) chain.getArg(pkgIndex) as? String else null
-                        val uid = if (uidIndex >= 0) chain.getArg(uidIndex) as? Int else null
-                        if (isSelectedCaller(pkg, uid)) {
-                            return@intercept PackageManager.PERMISSION_GRANTED
-                        }
-                    }
-                    chain.proceed()
-                }
-                hooked++
-                log(Log.INFO, TAG, "Hooked ${clazz.simpleName}.${m.name}")
-            }.onFailure { log(Log.WARN, TAG, "${clazz.simpleName}.${m.name} hook failed", it) }
-        }
-        if (hooked == 0) {
-            log(Log.WARN, TAG, "No PermissionManagerService methods hooked")
         }
     }
 
@@ -338,25 +345,17 @@ class XposedEntry : XposedModule() {
         private const val TAG = "ABP"
         private const val OWN_PACKAGE = "wonton.abp"
 
-        private const val PERM_REQUEST_INSTALL = "android.permission.REQUEST_INSTALL_PACKAGES"
-
         // AppOpsManager.OP_REQUEST_INSTALL_PACKAGES is @hide; its stable value is 66.
         private const val OP_REQUEST_INSTALL_PACKAGES = 66
-        private const val OPSTR_REQUEST_INSTALL_PACKAGES =
-            "android:request_install_packages"
 
-        // NOTE: these are the SERVER-side AppOpsService method names (not the
-        // client AppOpsManager names like checkOpNoThrow). canRequestPackageInstalls()
-        // -> AppOpsManager.checkOpNoThrow() -> IAppOpsService.checkOperation() ->
+        // SERVER-side AppOpsService methods that RETURN AN INT MODE. We only hook
+        // these (not note*/start*, which return SyncNotedAppOp on Android 12+ and
+        // would throw a ClassCastException). canRequestPackageInstalls() ->
+        // AppOpsManager.checkOpNoThrow() -> IAppOpsService.checkOperation() ->
         // AppOpsService.checkOperation(int, int, String) on the system_server side.
         private val APP_OPS_METHODS = setOf(
             "checkOperation",
             "checkOperationRaw",
-            "checkOperationUnchecked",
-            "noteOperation",
-            "noteOperationUnchecked",
-            "noteProxyOperation",
-            "startOperation",
         )
 
         @Suppress("DEPRECATION")

@@ -4,8 +4,17 @@
     <!-- Overflow menu -->
     <string name="menu_configure_installer">Configure default installer</string>
     <string name="menu_select_all_installers">Select all apps with install permission</string>
+    <string name="menu_show_system_apps">Show system apps</string>
+    <string name="menu_hide_system_apps">Hide system apps</string>
     <string name="menu_language">App language</string>
     <string name="menu_about">About</string>
+
+    <!-- Language picker dialog -->
+    <string name="language_dialog_title">App language</string>
+    <string name="language_system_default">System default</string>
+    <string name="language_english">English</string>
+    <string name="language_zh_cn">简体中文</string>
+    <string name="language_zh_tw">繁體中文</string>
 
     <!-- Installer config dialog -->
     <string name="installer_dialog_title">Configure default installer</string>
@@ -23,7 +32,6 @@
     <string name="reset">Reset</string>
     <string name="badge_install_perm">Install permission</string>
     <string name="badge_system">System</string>
-    <string name="language_settings_unavailable">Language settings are not available on this device.</string>
     <string name="loading">Loading installed apps…</string>
 
     <!-- Module state -->

@@ -2,6 +2,7 @@
 agp = "9.3.1"
 kotlin = "2.4.10"
 coreKtx = "1.19.0"
+appcompat = "1.7.1"
 lifecycleRuntimeKtx = "2.11.0"
 activityCompose = "1.13.0"
 coroutines = "1.11.0"
@@ -13,6 +14,9 @@ licensee = "1.14.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+# AppCompat provides the backward-compatible per-app language APIs
+# (AppCompatDelegate.setApplicationLocales) used by the in-app language picker.
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeKtx" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleRuntimeKtx" }
