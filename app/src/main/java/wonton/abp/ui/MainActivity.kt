@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -187,18 +188,34 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
  */
 private fun openAppLanguageSettings(context: android.content.Context) {
     val pkgUri = Uri.fromParts("package", context.packageName, null)
-    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        Intent(Settings.ACTION_APP_LOCALE_SETTINGS, pkgUri)
-    } else {
-        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri)
+
+    // Candidate intents, in order of preference. Some OEMs (e.g. Huawei /
+    // HarmonyOS) don't implement ACTION_APP_LOCALE_SETTINGS, so we fall back
+    // to the generic app-details page, and finally to the global locale list.
+    val candidates = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Intent(Settings.ACTION_APP_LOCALE_SETTINGS, pkgUri))
+        }
+        add(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri))
+        add(Intent(Settings.ACTION_LOCALE_SETTINGS))
     }
-    runCatching { context.startActivity(intent) }.onFailure {
-        runCatching {
-            context.startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri)
-            )
+
+    val pm = context.packageManager
+    for (intent in candidates) {
+        // Adding NEW_TASK is required because `context` may not be an Activity
+        // (e.g. the application context supplied by Compose in some cases).
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (intent.resolveActivity(pm) != null) {
+            val launched = runCatching { context.startActivity(intent) }.isSuccess
+            if (launched) return
         }
     }
+
+    Toast.makeText(
+        context,
+        context.getString(R.string.language_settings_unavailable),
+        Toast.LENGTH_SHORT,
+    ).show()
 }
 
 @Composable
@@ -222,9 +239,6 @@ private fun AppList(
     selectedCount: Int,
     onToggle: (String, Boolean) -> Unit,
 ) {
-    val installers = apps.filter { it.requestsInstallPermission }
-    val others = apps.filterNot { it.requestsInstallPermission }
-
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         if (!moduleActive) {
             item { ModuleInactiveBanner() }
@@ -238,18 +252,8 @@ private fun AppList(
             )
         }
 
-        if (installers.isNotEmpty()) {
-            item { SectionHeader(stringResource(R.string.section_installers)) }
-            items(installers, key = { it.packageName }) { app ->
-                AppRow(app, app.packageName in selected, onToggle)
-            }
-        }
-
-        if (others.isNotEmpty()) {
-            item { SectionHeader(stringResource(R.string.section_others)) }
-            items(others, key = { it.packageName }) { app ->
-                AppRow(app, app.packageName in selected, onToggle)
-            }
+        items(apps, key = { it.packageName }) { app ->
+            AppRow(app, app.packageName in selected, onToggle)
         }
     }
 }
@@ -281,17 +285,6 @@ private fun ModuleInactiveBanner() {
 }
 
 @Composable
-private fun SectionHeader(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-    )
-}
-
-@Composable
 private fun AppRow(
     app: AppInfo,
     checked: Boolean,
@@ -319,11 +312,52 @@ private fun AppRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (app.requestsInstallPermission || app.isSystem) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (app.requestsInstallPermission) {
+                        TagChip(
+                            text = stringResource(R.string.badge_install_perm),
+                            container = MaterialTheme.colorScheme.primaryContainer,
+                            content = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                    if (app.isSystem) {
+                        TagChip(
+                            text = stringResource(R.string.badge_system),
+                            container = MaterialTheme.colorScheme.secondaryContainer,
+                            content = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                }
+            }
         }
         Spacer(Modifier.width(8.dp))
         Checkbox(
             checked = checked,
             onCheckedChange = { onToggle(app.packageName, it) },
+        )
+    }
+}
+
+@Composable
+private fun TagChip(
+    text: String,
+    container: androidx.compose.ui.graphics.Color,
+    content: androidx.compose.ui.graphics.Color,
+) {
+    Surface(
+        color = container,
+        shape = RoundedCornerShape(6.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = content,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
     }
 }

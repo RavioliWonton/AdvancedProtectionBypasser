@@ -94,10 +94,18 @@ class XposedEntry : XposedModule() {
      * Hooks `com.android.server.appop.AppOpsService` operation checks so that
      * `OP_REQUEST_INSTALL_PACKAGES` reports `MODE_ALLOWED` for selected callers.
      *
-     * The public methods (`checkOperation`, `noteOperation`,
-     * `checkOperationRaw`, `noteProxyOperation`, ...) share a leading
-     * `(int code, int uid, String packageName, ...)` shape, so we locate the
-     * op-code int and the package/uid positionally.
+     * We only hook the server-side methods that RETURN AN INT MODE
+     * (`checkOperation`, `checkOperationRaw`). This is exactly what
+     * `PackageManager.canRequestPackageInstalls()` and
+     * `AppOpsManager.checkOpNoThrow(...)` funnel into inside system_server.
+     *
+     * IMPORTANT: we deliberately do NOT hook `noteOperation`/`noteProxyOperation`
+     * here — on Android 12+ those return a `SyncNotedAppOp` object, so returning
+     * an int `MODE_ALLOWED` would cause a ClassCastException. The permission
+     * gate that Huawei AppGallery (and others) hit is the `checkOperation` path.
+     *
+     * These methods share a leading `(int code, int uid, String packageName,
+     * ...)` shape, so we locate the op-code int and the package/uid positionally.
      */
     private fun hookAppOpsService(cl: ClassLoader) {
         val clazz = runCatching {
@@ -115,6 +123,14 @@ class XposedEntry : XposedModule() {
             if (!APP_OPS_METHODS.contains(m.name)) continue
             val params = m.parameterTypes
             if (params.isEmpty() || params[0] != Int::class.javaPrimitiveType) continue
+
+            // Only hook methods that return an int op MODE. On Android 12+
+            // noteOperation/noteProxyOperation return a SyncNotedAppOp object, so
+            // returning an int MODE_ALLOWED there would throw a ClassCastException.
+            // The `canRequestPackageInstalls()` gate that Huawei AppGallery hits
+            // funnels into checkOperation (int return), so this is sufficient and
+            // remains version-safe on older releases where note* also returns int.
+            if (m.returnType != Int::class.javaPrimitiveType) continue
 
             // uid is the first int after the op code; package name is the first
             // String argument.
@@ -137,9 +153,13 @@ class XposedEntry : XposedModule() {
                     chain.proceed()
                 }
                 hooked++
+                log(Log.INFO, TAG, "Hooked AppOpsService.${m.name}(${params.size} args)")
             }.onFailure { log(Log.WARN, TAG, "AppOpsService.${m.name} hook failed", it) }
         }
         log(Log.INFO, TAG, "Hooked AppOpsService op checks ($hooked methods)")
+        if (hooked == 0) {
+            log(Log.ERROR, TAG, "No AppOpsService op-check methods hooked (method names mismatch?)")
+        }
     }
 
     /**
@@ -325,15 +345,18 @@ class XposedEntry : XposedModule() {
         private const val OPSTR_REQUEST_INSTALL_PACKAGES =
             "android:request_install_packages"
 
+        // NOTE: these are the SERVER-side AppOpsService method names (not the
+        // client AppOpsManager names like checkOpNoThrow). canRequestPackageInstalls()
+        // -> AppOpsManager.checkOpNoThrow() -> IAppOpsService.checkOperation() ->
+        // AppOpsService.checkOperation(int, int, String) on the system_server side.
         private val APP_OPS_METHODS = setOf(
-            "checkOpNoThrow",
-            "noteOpNoThrow",
-            "unsafeCheckOpNoThrow",
-            "unsafeCheckOpRawNoThrow",
-            "checkOp",
-            "noteOp",
-            "noteProxyOpNoThrow",
-            "noteProxyOp",
+            "checkOperation",
+            "checkOperationRaw",
+            "checkOperationUnchecked",
+            "noteOperation",
+            "noteOperationUnchecked",
+            "noteProxyOperation",
+            "startOperation",
         )
 
         @Suppress("DEPRECATION")

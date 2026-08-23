@@ -80,10 +80,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(selected = store.getSelectedPackages())
     }
 
-    /** Selects every app that declares REQUEST_INSTALL_PACKAGES, applied immediately. */
+    /**
+     * Selects every non-system app that declares REQUEST_INSTALL_PACKAGES,
+     * applied immediately. System apps are excluded from auto-selection.
+     */
     fun selectAllInstallers() {
         val installers = _apps.value
-            .filter { it.requestsInstallPermission }
+            .filter { it.requestsInstallPermission && !it.isSystem }
             .map { it.packageName }
         val store = currentStore()
         val next = store.getSelectedPackages().toMutableSet().apply { addAll(installers) }

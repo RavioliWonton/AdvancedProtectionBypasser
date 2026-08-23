@@ -21,9 +21,9 @@
     <string name="cancel">Cancel</string>
     <string name="close">Close</string>
     <string name="reset">Reset</string>
-    <string name="section_installers">Apps with install permission</string>
-    <string name="section_others">Other apps</string>
     <string name="badge_install_perm">Install permission</string>
+    <string name="badge_system">System</string>
+    <string name="language_settings_unavailable">Language settings are not available on this device.</string>
     <string name="loading">Loading installed apps…</string>
 
     <!-- Module state -->
