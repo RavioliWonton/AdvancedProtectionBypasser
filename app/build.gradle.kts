@@ -20,6 +20,21 @@ android {
         versionName = "1.0.0"
     }
 
+    signingConfigs {
+        create("release") {
+            // All values come from environment variables so no secret ever
+            // lands in the repo. CI populates them from GitHub Actions secrets;
+            // locally they are simply absent and the release build stays unsigned.
+            val storePath = System.getenv("KEYSTORE_FILE")
+            if (storePath != null) {
+                storeFile = file(storePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -28,6 +43,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only attach the signing config when a keystore was provided,
+            // otherwise Gradle would fail configuring an empty signing config.
+            if (System.getenv("KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
