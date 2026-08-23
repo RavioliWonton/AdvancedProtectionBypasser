@@ -65,7 +65,9 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
 
       - name: Validate dependency licenses
-        run: ./gradlew :app:licenseeRelease --no-configuration-cache
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:licenseeRelease --no-configuration-cache
 
       - name: Build signed release APK
         env:
