@@ -33,7 +33,7 @@
     <string name="settings_bypass_user_restriction_desc">解除系統停用未知來源安裝的限制（進階保護會啟用它）。此項對整個裝置生效，而非單一應用程式。請在了解風險後再開啟。預設關閉。</string>
 
     <!-- About dialog -->
-    <string name="about_message">Advanced Protection Bypasser\n\n一個開源的 Xposed 模組 + Jetpack Compose 應用程式。\n\n為選取的應用程式強制授予安裝權限，並將其安裝意圖重新導向到指定的安裝器。\n\n本專案為開源軟體。</string>
+    <string name="about_message">Advanced Protection Bypasser\n\n一個開源的 Xposed 模組 + Jetpack Compose 應用程式。\n\n為選取的應用程式強制授予安裝權限，並將其安裝意圖重新導向到指定的安裝器。\n\n本專案基於 GNU 通用公共授權條款第 3 版（GPLv3）開源。你可以在該授權條款下自由使用、研究、分享與修改本軟體。</string>
 
     <!-- Common -->
     <string name="ok">確定</string>

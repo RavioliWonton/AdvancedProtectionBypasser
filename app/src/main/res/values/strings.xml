@@ -33,7 +33,7 @@
     <string name="settings_bypass_user_restriction_desc">Lifts the system restriction that disables unknown-sources installs (used by Advanced Protection). This applies to the whole device, not a single app. Only enable if you understand the risk. Off by default.</string>
 
     <!-- About dialog -->
-    <string name="about_message">Advanced Protection Bypasser\n\nAn open-source Xposed module + Jetpack Compose app.\n\nForce-grants install permission to selected apps and redirects their install intents to a configurable installer.\n\nThis project is open-source software.</string>
+    <string name="about_message">Advanced Protection Bypasser\n\nAn open-source Xposed module + Jetpack Compose app.\n\nForce-grants install permission to selected apps and redirects their install intents to a configurable installer.\n\nLicensed under the GNU General Public License v3.0 (GPLv3). You are free to use, study, share and modify it under the terms of that license.</string>
 
     <!-- Common -->
     <string name="ok">OK</string>

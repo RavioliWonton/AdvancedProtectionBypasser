@@ -102,7 +102,7 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
     // System apps are hidden by default on every launch; this state is
     // intentionally not persisted.
     var showSystemApps by remember { mutableStateOf(false) }
-    // Bottom-navigation destination: 0 = app list, 1 = status page.
+    // Bottom-navigation destination: 0 = status page (home), 1 = app list.
     var selectedTab by remember { mutableStateOf(0) }
 
     val visibleApps = if (showSystemApps) apps else apps.filterNot { it.isSystem }
@@ -112,9 +112,7 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
             TopAppBar(
                 title = {
                     Text(
-                        text = stringResource(
-                            if (selectedTab == 0) R.string.app_name else R.string.nav_status
-                        ),
+                        text = stringResource(R.string.app_name),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -124,25 +122,26 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
                 actions = {
-                    // The overflow menu only applies to the app-list tab.
-                    if (selectedTab == 0) {
-                        IconButton(onClick = { menuExpanded = true }) {
-                            Icon(
-                                imageVector = Icons.Filled.MoreVert,
-                                contentDescription = stringResource(R.string.menu_more),
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_settings)) },
-                                onClick = {
-                                    menuExpanded = false
-                                    showSettingsDialog = true
-                                },
-                            )
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = stringResource(R.string.menu_more),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_settings)) },
+                            onClick = {
+                                menuExpanded = false
+                                showSettingsDialog = true
+                            },
+                        )
+                        // App-list-specific actions only make sense on the
+                        // app-list tab (selectedTab == 1).
+                        if (selectedTab == 1) {
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.menu_select_all_installers)) },
                                 onClick = {
@@ -164,42 +163,32 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                                     showSystemApps = !showSystemApps
                                 },
                             )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_language)) },
-                                onClick = {
-                                    menuExpanded = false
-                                    showLanguageDialog = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_about)) },
-                                onClick = {
-                                    menuExpanded = false
-                                    showAboutDialog = true
-                                },
-                            )
                         }
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_language)) },
+                            onClick = {
+                                menuExpanded = false
+                                showLanguageDialog = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_about)) },
+                            onClick = {
+                                menuExpanded = false
+                                showAboutDialog = true
+                            },
+                        )
                     }
                 },
             )
         },
         bottomBar = {
             NavigationBar {
+                // Home tab: running status.
                 NavigationBarItem(
                     selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.List,
-                            contentDescription = null,
-                        )
-                    },
-                    label = { Text(stringResource(R.string.nav_apps)) },
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
                     onClick = {
-                        selectedTab = 1
+                        selectedTab = 0
                         vm.refreshStatus()
                     },
                     icon = {
@@ -210,13 +199,25 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                     },
                     label = { Text(stringResource(R.string.nav_status)) },
                 )
+                // App list moved to the right.
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.List,
+                            contentDescription = null,
+                        )
+                    },
+                    label = { Text(stringResource(R.string.nav_apps)) },
+                )
             }
         },
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when {
                 state.loading -> LoadingView()
-                selectedTab == 1 -> StatusScreen(state)
+                selectedTab == 0 -> StatusScreen(state)
                 else -> AppList(
                     apps = visibleApps,
                     selected = state.selected,
