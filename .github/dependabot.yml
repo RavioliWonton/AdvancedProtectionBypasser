@@ -1,0 +1,36 @@
+version: 2
+
+# All open security alerts on this repo come from *build-time* transitive
+# dependencies pulled in by Gradle/AGP and Gradle plugins (netty, bouncycastle,
+# plexus-utils, jdom2, jose4j, httpclient, commons-lang3, ...). None of them are
+# packaged into the released APK — the app's runtime graph is only AndroidX /
+# Compose / coroutines / libxposed. We therefore scope Dependabot to the two
+# things we actually ship/control and ignore the build-tool transitive graph.
+updates:
+  # Gradle: keep our *direct* dependencies (declared in gradle/libs.versions.toml)
+  # up to date, but never raise PRs for the build-tooling transitive artifacts
+  # that generate the noisy (non-shipping) security alerts.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # Build-tool / plugin transitive deps — not shipped in the APK.
+      - dependency-name: "io.netty:*"
+      - dependency-name: "org.bouncycastle:*"
+      - dependency-name: "org.codehaus.plexus:*"
+      - dependency-name: "org.apache.maven:*"
+      - dependency-name: "org.eclipse.sisu:*"
+      - dependency-name: "org.jdom:*"
+      - dependency-name: "org.bitbucket.b_c:jose4j"
+      - dependency-name: "org.apache.httpcomponents:*"
+      - dependency-name: "org.apache.commons:commons-lang3"
+      - dependency-name: "dev.drewhamilton.poko:*"
+
+  # Keep the GitHub Actions used by the release workflow current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
