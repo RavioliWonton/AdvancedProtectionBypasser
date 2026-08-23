@@ -69,6 +69,20 @@ class XposedEntry : XposedModule() {
         false
     }
 
+    /**
+     * Whether the user has selected at least one app. Used to gate hooks that
+     * operate on version/global signals with NO per-caller argument (e.g. the
+     * `DISALLOW_INSTALL_UNKNOWN_SOURCES` user restriction). We only relax such
+     * global gates when the user actually intends to bypass for some app.
+     */
+    private fun hasAnySelection(): Boolean = try {
+        val set = getRemotePreferences(Prefs.GROUP)
+            .getStringSet(Prefs.KEY_SELECTED, emptySet()) ?: emptySet()
+        set.isNotEmpty()
+    } catch (t: Throwable) {
+        false
+    }
+
     private fun installerPackage(): String = try {
         getRemotePreferences(Prefs.GROUP)
             .getString(Prefs.KEY_INSTALLER, Prefs.DEFAULT_INSTALLER)
@@ -88,14 +102,35 @@ class XposedEntry : XposedModule() {
     // ---------------------------------------------------------------------
 
     private fun hookInstallPermission(cl: ClassLoader) {
-        // Order matters only for logging; both gates are independent.
+        // Order matters only for logging; all gates are independent.
+        //
+        // Coverage across Android versions (API 26 = Android 8.0 .. API 36 =
+        // Android 16), all keyed on the *calling* app:
+        //  - canRequestPackageInstalls: the high-level PackageManager Binder
+        //    gate. Declared on PackageManagerService (API 26-30), moved to the
+        //    abstract IPackageManagerBase (final 2-arg) with the real worker on
+        //    ComputerEngine (API 31+). Covered by superclass-walking seeds.
+        //  - AppOpsService.checkOperation(op 66): the appop backing the
+        //    REQUEST_INSTALL_PACKAGES permission on EVERY version. Also counters
+        //    Android 16 Advanced Protection which force-sets op 66 to
+        //    MODE_ERRORED.
+        //  - EnhancedConfirmationService.isRestricted: ECM gate introduced in
+        //    Android 15 (API 35) and used by Android 16 to block "restricted
+        //    settings" including granting install-from-unknown-sources.
+        //  - UserManagerService.hasUserRestriction: the
+        //    DISALLOW_INSTALL_UNKNOWN_SOURCES[_GLOBALLY] user restriction. This
+        //    is the OTHER mechanism Android 16 Advanced Protection uses (a global
+        //    user restriction, separate from the appop). Present since early
+        //    versions for managed profiles / device-owner policies too.
         hookCanRequestPackageInstalls(cl)
         hookAppOpsService(cl)
+        hookEnhancedConfirmation(cl)
+        hookUserRestriction(cl)
     }
 
     /**
-     * Hooks `PackageManagerService.canRequestPackageInstalls(String packageName,
-     * int userId)` so it returns `true` for selected callers.
+     * Hooks `canRequestPackageInstalls(...)` so it returns `true` for selected
+     * callers.
      *
      * This is the highest-level, most reliable gate: apps that redirect users to
      * `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` (like Huawei AppGallery)
@@ -103,41 +138,65 @@ class XposedEntry : XposedModule() {
      * this exact Binder method. Hooking here bypasses any OEM-specific internals
      * that may not funnel through the standard `AppOpsService.checkOperation`.
      *
-     * On Android 13+ the Binder entry point lives on the inner class
-     * `PackageManagerService$IPackageManagerImpl`; we hook every class that
-     * declares a `canRequestPackageInstalls` method just to be safe.
+     * The method lives on DIFFERENT classes depending on the Android version, so
+     * a fixed class list scanned with `declaredMethods` is not enough:
+     *  - Legacy: declared directly on `PackageManagerService`
+     *    (`boolean canRequestPackageInstalls(String, int)`).
+     *  - Android 13+ (incl. 14/15/16): the 2-arg Binder entry point is declared
+     *    on the abstract base class `IPackageManagerBase` and is `final`, so the
+     *    concrete Binder stub `PackageManagerService$IPackageManagerImpl` does
+     *    NOT re-declare it — scanning only the concrete class finds nothing.
+     *  - The real worker is `ComputerEngine.canRequestPackageInstalls(String,
+     *    int callingUid, int userId, boolean throwIfPermNotDeclared)` (4 args).
+     *
+     * We therefore start from several seed classes and walk UP each superclass
+     * chain, hooking every distinct `canRequestPackageInstalls` method that
+     * returns `boolean` and takes a package-name `String`. Hooking both the
+     * 2-arg Binder entry and the 4-arg worker is belt-and-suspenders and keeps
+     * us version-independent. The package name is always the first `String`
+     * argument in every known signature.
      */
     private fun hookCanRequestPackageInstalls(cl: ClassLoader) {
-        val candidates = listOf(
-            "com.android.server.pm.PackageManagerService",
+        val seeds = listOf(
             "com.android.server.pm.PackageManagerService\$IPackageManagerImpl",
             "com.android.server.pm.IPackageManagerImpl",
-            "com.android.server.pm.PackageManagerServiceImpl",
+            "com.android.server.pm.IPackageManagerBase",
+            "com.android.server.pm.PackageManagerService",
+            "com.android.server.pm.ComputerEngine",
         )
+        val seen = HashSet<java.lang.reflect.Method>()
         var hooked = 0
-        for (name in candidates) {
-            val clazz = runCatching { cl.loadClass(name) }.getOrNull() ?: continue
-            for (m in clazz.declaredMethods) {
-                if (m.name != "canRequestPackageInstalls") continue
-                if (m.returnType != Boolean::class.javaPrimitiveType) continue
-                val params = m.parameterTypes
-                val pkgIndex = params.indexOfFirst { it == String::class.java }
-                if (pkgIndex < 0) continue
+        for (name in seeds) {
+            var clazz: Class<*>? = runCatching { cl.loadClass(name) }.getOrNull()
+            // Walk up the superclass chain so methods declared on a base class
+            // (e.g. IPackageManagerBase) are found even when we seed from the
+            // concrete Binder impl.
+            while (clazz != null && clazz != Any::class.java) {
+                val current = clazz
+                for (m in current.declaredMethods) {
+                    if (m.name != "canRequestPackageInstalls") continue
+                    if (m.returnType != Boolean::class.javaPrimitiveType) continue
+                    val params = m.parameterTypes
+                    val pkgIndex = params.indexOfFirst { it == String::class.java }
+                    if (pkgIndex < 0) continue
+                    if (!seen.add(m)) continue
 
-                runCatching {
-                    hook(m).intercept { chain ->
-                        val pkg = chain.getArg(pkgIndex) as? String
-                        if (pkg != null && pkg != OWN_PACKAGE && isSelected(pkg)) {
-                            log(Log.INFO, TAG, "canRequestPackageInstalls($pkg) -> forced true")
-                            return@intercept true
+                    runCatching {
+                        hook(m).intercept { chain ->
+                            val pkg = chain.getArg(pkgIndex) as? String
+                            if (pkg != null && pkg != OWN_PACKAGE && isSelected(pkg)) {
+                                log(Log.INFO, TAG, "canRequestPackageInstalls($pkg) -> forced true")
+                                return@intercept true
+                            }
+                            chain.proceed()
                         }
-                        chain.proceed()
+                        hooked++
+                        log(Log.INFO, TAG, "Hooked ${current.name}.canRequestPackageInstalls(${params.size} args)")
+                    }.onFailure {
+                        log(Log.WARN, TAG, "${current.name}.canRequestPackageInstalls hook failed", it)
                     }
-                    hooked++
-                    log(Log.INFO, TAG, "Hooked ${clazz.simpleName}.canRequestPackageInstalls(${params.size} args)")
-                }.onFailure {
-                    log(Log.WARN, TAG, "${clazz.simpleName}.canRequestPackageInstalls hook failed", it)
                 }
+                clazz = current.superclass
             }
         }
         if (hooked == 0) {
@@ -214,6 +273,137 @@ class XposedEntry : XposedModule() {
         log(Log.INFO, TAG, "Hooked AppOpsService op checks ($hooked methods)")
         if (hooked == 0) {
             log(Log.ERROR, TAG, "No AppOpsService op-check methods hooked (method names mismatch?)")
+        }
+    }
+
+    /**
+     * Hooks the Enhanced Confirmation Mode (ECM) gate introduced in Android 15
+     * (API 35) and used on Android 16.
+     *
+     * `com.android.server.ecm.EnhancedConfirmationService.isRestricted(String
+     * packageName, String settingIdentifier)` returns `true` when a package is
+     * blocked from toggling a "restricted setting" — including granting
+     * install-from-unknown-sources. Sideloaded apps get flagged and the
+     * "Allow from this source" toggle is greyed out ("Restricted setting").
+     *
+     * The `settingIdentifier` for install permission is either the permission
+     * name `android.permission.REQUEST_INSTALL_PACKAGES` or the appop string
+     * `android:request_install_packages`, depending on the caller. We force
+     * `false` (not restricted) for selected apps on install-related identifiers.
+     *
+     * The class may not exist on Android < 15; that's fine (runCatching). We
+     * walk the superclass chain in case `isRestricted` is declared on a base.
+     */
+    private fun hookEnhancedConfirmation(cl: ClassLoader) {
+        val seeds = listOf(
+            "com.android.server.ecm.EnhancedConfirmationService",
+            "com.android.server.pm.EnhancedConfirmationService",
+        )
+        val seen = HashSet<java.lang.reflect.Method>()
+        var hooked = 0
+        for (name in seeds) {
+            var clazz: Class<*>? = runCatching { cl.loadClass(name) }.getOrNull()
+            while (clazz != null && clazz != Any::class.java) {
+                val current = clazz
+                for (m in current.declaredMethods) {
+                    if (m.name != "isRestricted") continue
+                    if (m.returnType != Boolean::class.javaPrimitiveType) continue
+                    val params = m.parameterTypes
+                    // isRestricted(String packageName, String settingIdentifier)
+                    if (params.size < 2) continue
+                    if (params[0] != String::class.java || params[1] != String::class.java) continue
+                    if (!seen.add(m)) continue
+
+                    runCatching {
+                        hook(m).intercept { chain ->
+                            val pkg = chain.getArg(0) as? String
+                            val setting = chain.getArg(1) as? String
+                            if (pkg != null && pkg != OWN_PACKAGE && isSelected(pkg) &&
+                                setting != null && setting in INSTALL_SETTING_IDENTIFIERS
+                            ) {
+                                log(Log.INFO, TAG, "ECM isRestricted($pkg, $setting) -> forced false")
+                                return@intercept false
+                            }
+                            chain.proceed()
+                        }
+                        hooked++
+                        log(Log.INFO, TAG, "Hooked ${current.name}.isRestricted(${params.size} args)")
+                    }.onFailure {
+                        log(Log.WARN, TAG, "${current.name}.isRestricted hook failed", it)
+                    }
+                }
+                clazz = current.superclass
+            }
+        }
+        if (hooked == 0) {
+            log(Log.INFO, TAG, "No ECM isRestricted method hooked (pre-Android 15?)")
+        }
+    }
+
+    /**
+     * Hooks the `DISALLOW_INSTALL_UNKNOWN_SOURCES` user restriction, the OTHER
+     * mechanism Android 16 Advanced Protection uses to block sideloading (in
+     * addition to force-setting appop 66 to MODE_ERRORED, which our
+     * AppOpsService hook counters).
+     *
+     * On enable, Advanced Protection calls
+     * `DevicePolicyManager.addUserRestrictionGlobally(...,
+     * DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY)`. That funnels into
+     * `com.android.server.pm.UserManagerService.hasUserRestriction(String
+     * restrictionKey, int userId)` (and `hasBaseUserRestriction`) which every
+     * install flow consults.
+     *
+     * CAVEAT: these methods carry NO package/uid argument — only the restriction
+     * key and userId — so we CANNOT scope the override to a specific selected
+     * app. Overriding therefore relaxes the install-unknown-sources restriction
+     * user-wide. To limit blast radius we only do so when the user has selected
+     * at least one app (`hasAnySelection()`), i.e. the module is actively in use.
+     * We restrict the override to install-related keys only; all other
+     * restrictions proceed untouched.
+     */
+    private fun hookUserRestriction(cl: ClassLoader) {
+        val clazz = runCatching {
+            cl.loadClass("com.android.server.pm.UserManagerService")
+        }.getOrElse {
+            runCatching { cl.loadClass("com.android.server.pm.UserManagerServiceImpl") }.getOrNull()
+        } ?: run {
+            log(Log.WARN, TAG, "UserManagerService class not found")
+            return
+        }
+
+        val seen = HashSet<java.lang.reflect.Method>()
+        var hooked = 0
+        var current: Class<*>? = clazz
+        while (current != null && current != Any::class.java) {
+            val c = current
+            for (m in c.declaredMethods) {
+                if (m.name != "hasUserRestriction" && m.name != "hasBaseUserRestriction") continue
+                if (m.returnType != Boolean::class.javaPrimitiveType) continue
+                val params = m.parameterTypes
+                // (String restrictionKey, int userId)
+                val keyIndex = params.indexOfFirst { it == String::class.java }
+                if (keyIndex < 0) continue
+                if (!seen.add(m)) continue
+
+                runCatching {
+                    hook(m).intercept { chain ->
+                        val key = chain.getArg(keyIndex) as? String
+                        if (key != null && key in INSTALL_USER_RESTRICTIONS && hasAnySelection()) {
+                            log(Log.INFO, TAG, "${m.name}($key) -> forced false")
+                            return@intercept false
+                        }
+                        chain.proceed()
+                    }
+                    hooked++
+                    log(Log.INFO, TAG, "Hooked ${c.name}.${m.name}(${params.size} args)")
+                }.onFailure {
+                    log(Log.WARN, TAG, "${c.name}.${m.name} hook failed", it)
+                }
+            }
+            current = c.superclass
+        }
+        if (hooked == 0) {
+            log(Log.WARN, TAG, "No UserManagerService restriction method hooked")
         }
     }
 
@@ -356,6 +546,26 @@ class XposedEntry : XposedModule() {
         private val APP_OPS_METHODS = setOf(
             "checkOperation",
             "checkOperationRaw",
+        )
+
+        // Enhanced Confirmation Mode (Android 15+) setting identifiers that gate
+        // install-from-unknown-sources. ECM's isRestricted(pkg, settingId) may be
+        // called with either the permission name or the appop string.
+        private val INSTALL_SETTING_IDENTIFIERS = setOf(
+            "android.permission.REQUEST_INSTALL_PACKAGES",
+            // AppOpsManager.OPSTR_REQUEST_INSTALL_PACKAGES
+            "android:request_install_packages",
+        )
+
+        // UserManager restriction keys that block sideloading. Android 16
+        // Advanced Protection sets DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY; the
+        // per-user and legacy install-apps keys are included for completeness.
+        // Values are @hide-stable string constants.
+        private val INSTALL_USER_RESTRICTIONS = setOf(
+            // UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES
+            "no_install_unknown_sources",
+            // UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY
+            "no_install_unknown_sources_globally",
         )
 
         @Suppress("DEPRECATION")
