@@ -19,10 +19,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +38,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -50,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -87,12 +96,14 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
     val apps by vm.apps.collectAsStateWithLifecycle()
 
     var menuExpanded by remember { mutableStateOf(false) }
-    var showInstallerDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
     // System apps are hidden by default on every launch; this state is
     // intentionally not persisted.
     var showSystemApps by remember { mutableStateOf(false) }
+    // Bottom-navigation destination: 0 = app list, 1 = status page.
+    var selectedTab by remember { mutableStateOf(0) }
 
     val visibleApps = if (showSystemApps) apps else apps.filterNot { it.isSystem }
 
@@ -101,7 +112,9 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
             TopAppBar(
                 title = {
                     Text(
-                        text = stringResource(R.string.app_name),
+                        text = stringResource(
+                            if (selectedTab == 0) R.string.app_name else R.string.nav_status
+                        ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -111,66 +124,99 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
                 actions = {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(
-                            imageVector = Icons.Filled.MoreVert,
-                            contentDescription = stringResource(R.string.menu_more),
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.menu_configure_installer)) },
-                            onClick = {
-                                menuExpanded = false
-                                showInstallerDialog = true
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.menu_select_all_installers)) },
-                            onClick = {
-                                menuExpanded = false
-                                vm.selectAllInstallers()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    stringResource(
-                                        if (showSystemApps) R.string.menu_hide_system_apps
-                                        else R.string.menu_show_system_apps
+                    // The overflow menu only applies to the app-list tab.
+                    if (selectedTab == 0) {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.MoreVert,
+                                contentDescription = stringResource(R.string.menu_more),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_settings)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    showSettingsDialog = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_select_all_installers)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    vm.selectAllInstallers()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        stringResource(
+                                            if (showSystemApps) R.string.menu_hide_system_apps
+                                            else R.string.menu_show_system_apps
+                                        )
                                     )
-                                )
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                showSystemApps = !showSystemApps
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.menu_language)) },
-                            onClick = {
-                                menuExpanded = false
-                                showLanguageDialog = true
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.menu_about)) },
-                            onClick = {
-                                menuExpanded = false
-                                showAboutDialog = true
-                            },
-                        )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    showSystemApps = !showSystemApps
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_language)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    showLanguageDialog = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.menu_about)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    showAboutDialog = true
+                                },
+                            )
+                        }
                     }
                 },
             )
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.List,
+                            contentDescription = null,
+                        )
+                    },
+                    label = { Text(stringResource(R.string.nav_apps)) },
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = {
+                        selectedTab = 1
+                        vm.refreshStatus()
+                    },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Info,
+                            contentDescription = null,
+                        )
+                    },
+                    label = { Text(stringResource(R.string.nav_status)) },
+                )
+            }
         },
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when {
                 state.loading -> LoadingView()
+                selectedTab == 1 -> StatusScreen(state)
                 else -> AppList(
                     apps = visibleApps,
                     selected = state.selected,
@@ -182,14 +228,19 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
         }
     }
 
-    if (showInstallerDialog) {
-        InstallerConfigDialog(
-            initialValue = state.installerPackage,
+    if (showSettingsDialog) {
+        SettingsDialog(
+            initialInstaller = state.installerPackage,
+            bypassEcm = state.bypassEcm,
+            bypassUserRestriction = state.bypassUserRestriction,
+            moduleActive = state.moduleActive,
+            onBypassEcmChange = vm::setBypassEcm,
+            onBypassUserRestrictionChange = vm::setBypassUserRestriction,
             onConfirm = {
                 vm.setInstallerPackage(it)
-                showInstallerDialog = false
+                showSettingsDialog = false
             },
-            onDismiss = { showInstallerDialog = false },
+            onDismiss = { showSettingsDialog = false },
         )
     }
 
@@ -308,6 +359,126 @@ private fun AppList(
     }
 }
 
+// -------------------------------------------------------------------------
+// Status page (bottom-navigation destination #1)
+// -------------------------------------------------------------------------
+
+@Composable
+private fun StatusScreen(state: UiState) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+    ) {
+        StatusHeaderCard(state)
+        Spacer(Modifier.height(16.dp))
+        StatusDetailCard(state)
+    }
+}
+
+@Composable
+private fun StatusHeaderCard(state: UiState) {
+    val active = state.moduleActive
+    val container =
+        if (active) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.errorContainer
+    val content =
+        if (active) MaterialTheme.colorScheme.onPrimaryContainer
+        else MaterialTheme.colorScheme.onErrorContainer
+
+    Surface(
+        color = container,
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (active) Icons.Outlined.CheckCircle else Icons.Outlined.Info,
+                    contentDescription = null,
+                    tint = content,
+                    modifier = Modifier.size(28.dp),
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = stringResource(
+                        if (active) R.string.status_module_active
+                        else R.string.status_module_inactive
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = content,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(
+                    if (active) R.string.status_module_active_desc
+                    else R.string.status_report_logs
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = content,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusDetailCard(state: UiState) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            state.frameworkName?.let { name ->
+                val version = state.frameworkVersion
+                StatusRow(
+                    label = stringResource(R.string.status_framework),
+                    value = if (version.isNullOrEmpty()) name else "$name ($version)",
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            // Live "hook count": number of processes currently hooked by the
+            // module, when the framework exposes it.
+            val count = state.hookedTargetCount
+            StatusRow(
+                label = stringResource(R.string.status_hook_count),
+                value = if (count != null) count.toString()
+                else stringResource(R.string.status_hook_count_unavailable),
+            )
+            Spacer(Modifier.height(12.dp))
+            StatusRow(
+                label = stringResource(R.string.status_selected_apps),
+                value = state.selected.size.toString(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
 @Composable
 private fun ModuleInactiveBanner() {
     Surface(
@@ -343,6 +514,13 @@ private fun AppRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // Whole row is toggleable (with a ripple) so tapping anywhere on the
+            // item flips the selection, not just the trailing checkbox.
+            .toggleable(
+                value = checked,
+                role = Role.Checkbox,
+                onValueChange = { onToggle(app.packageName, it) },
+            )
             .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -386,9 +564,10 @@ private fun AppRow(
             }
         }
         Spacer(Modifier.width(8.dp))
+        // The row handles the toggle; the checkbox is purely a visual indicator.
         Checkbox(
             checked = checked,
-            onCheckedChange = { onToggle(app.packageName, it) },
+            onCheckedChange = null,
         )
     }
 }

@@ -2,7 +2,7 @@
     <string name="app_name">Advanced Protection Bypasser</string>
 
     <!-- Overflow menu -->
-    <string name="menu_configure_installer">配置默认安装器</string>
+    <string name="menu_settings">设置</string>
     <string name="menu_select_all_installers">全选拥有安装权限的所有应用</string>
     <string name="menu_show_system_apps">显示系统应用</string>
     <string name="menu_hide_system_apps">隐藏系统应用</string>
@@ -16,11 +16,21 @@
     <string name="language_zh_cn">简体中文</string>
     <string name="language_zh_tw">繁體中文</string>
 
-    <!-- Installer config dialog -->
-    <string name="installer_dialog_title">配置默认安装器</string>
+    <!-- Settings dialog -->
+    <string name="settings_dialog_title">设置</string>
+    <string name="installer_dialog_title">默认安装器</string>
     <string name="installer_dialog_hint">安装器包名</string>
     <string name="installer_dialog_desc">被选中应用的 ACTION_INSTALL_PACKAGE 意图会被追加 setPackage(此包名)。</string>
     <string name="default_installer">moe.shizuku.installer</string>
+
+    <!-- Advanced settings -->
+    <string name="settings_advanced_title">高级设置</string>
+    <string name="settings_status_enabled">：已成功启用</string>
+    <string name="settings_status_failed">：启用失败</string>
+    <string name="settings_bypass_ecm_title">放开受限设置保护</string>
+    <string name="settings_bypass_ecm_desc">对选中的应用，解除“受限设置”拦截（Android 15+），使其可以打开“允许来自此来源的安装”开关。默认关闭。</string>
+    <string name="settings_bypass_user_restriction_title">放开未知来源安装限制</string>
+    <string name="settings_bypass_user_restriction_desc">解除系统禁用未知来源安装的限制（高级保护会启用它）。此项对整个设备生效，而非单个应用。请在了解风险后再开启。默认关闭。</string>
 
     <!-- About dialog -->
     <string name="about_message">Advanced Protection Bypasser\n\n一个开源的 Xposed 模块 + Jetpack Compose 应用。\n\n为选中的应用强制授予安装权限，并将其安装意图重定向到指定安装器。\n\n本项目为开源软件。</string>
@@ -39,4 +49,18 @@
     <string name="module_inactive_desc">请在 LSPosed 管理器中启用本模块并勾选作用域，重启后配置才会生效。</string>
     <string name="menu_more">更多</string>
     <string name="selected_count">已选择 %1$d 个应用</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_apps">应用列表</string>
+    <string name="nav_status">运行状态</string>
+
+    <!-- Status page -->
+    <string name="status_module_active">模块运行中</string>
+    <string name="status_module_active_desc">模块已启用并已连接到框架。选中的应用会被绕过安装限制。</string>
+    <string name="status_module_inactive">启用失败</string>
+    <string name="status_report_logs">模块未连接到 Xposed 框架。请在 LSPosed 管理器中启用本模块、勾选作用域并重启。如果仍然失败，请在 LSPosed 管理器中打包日志并反馈问题。</string>
+    <string name="status_framework">框架</string>
+    <string name="status_hook_count">已注入进程数</string>
+    <string name="status_hook_count_unavailable">不可用</string>
+    <string name="status_selected_apps">已选应用</string>
 </resources>

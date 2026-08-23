@@ -16,4 +16,22 @@ object Prefs {
 
     /** Default installer package. */
     const val DEFAULT_INSTALLER = "moe.shizuku.installer"
+
+    /**
+     * Boolean (default false): whether to relax the Enhanced Confirmation Mode
+     * (Android 15+) "restricted setting" gate for install-from-unknown-sources
+     * of selected apps. Off by default.
+     */
+    const val KEY_BYPASS_ECM = "bypass_ecm"
+
+    /**
+     * Boolean (default false): whether to relax the
+     * DISALLOW_INSTALL_UNKNOWN_SOURCES[_GLOBALLY] user restriction (the global
+     * gate Advanced Protection uses). This applies to the whole user, not a
+     * single app. Off by default.
+     */
+    const val KEY_BYPASS_USER_RESTRICTION = "bypass_user_restriction"
+
+    /** Default for both advanced bypass toggles. */
+    const val DEFAULT_BYPASS = false
 }

@@ -91,6 +91,29 @@ class XposedEntry : XposedModule() {
         Prefs.DEFAULT_INSTALLER
     }
 
+    /**
+     * Whether the user opted in to relaxing the Enhanced Confirmation Mode
+     * restricted-setting gate (Android 15+). Off by default.
+     */
+    private fun bypassEcmEnabled(): Boolean = try {
+        getRemotePreferences(Prefs.GROUP)
+            .getBoolean(Prefs.KEY_BYPASS_ECM, Prefs.DEFAULT_BYPASS)
+    } catch (t: Throwable) {
+        Prefs.DEFAULT_BYPASS
+    }
+
+    /**
+     * Whether the user opted in to relaxing the
+     * DISALLOW_INSTALL_UNKNOWN_SOURCES[_GLOBALLY] user restriction. Off by
+     * default. This is a user-wide relaxation (no per-app scope available).
+     */
+    private fun bypassUserRestrictionEnabled(): Boolean = try {
+        getRemotePreferences(Prefs.GROUP)
+            .getBoolean(Prefs.KEY_BYPASS_USER_RESTRICTION, Prefs.DEFAULT_BYPASS)
+    } catch (t: Throwable) {
+        Prefs.DEFAULT_BYPASS
+    }
+
     // ---------------------------------------------------------------------
     // Hook 1 (system_server): install-permission checks -> granted for a
     // selected app.
@@ -318,7 +341,8 @@ class XposedEntry : XposedModule() {
                         hook(m).intercept { chain ->
                             val pkg = chain.getArg(0) as? String
                             val setting = chain.getArg(1) as? String
-                            if (pkg != null && pkg != OWN_PACKAGE && isSelected(pkg) &&
+                            if (bypassEcmEnabled() &&
+                                pkg != null && pkg != OWN_PACKAGE && isSelected(pkg) &&
                                 setting != null && setting in INSTALL_SETTING_IDENTIFIERS
                             ) {
                                 log(Log.INFO, TAG, "ECM isRestricted($pkg, $setting) -> forced false")
@@ -388,7 +412,9 @@ class XposedEntry : XposedModule() {
                 runCatching {
                     hook(m).intercept { chain ->
                         val key = chain.getArg(keyIndex) as? String
-                        if (key != null && key in INSTALL_USER_RESTRICTIONS && hasAnySelection()) {
+                        if (key != null && key in INSTALL_USER_RESTRICTIONS &&
+                            bypassUserRestrictionEnabled() && hasAnySelection()
+                        ) {
                             log(Log.INFO, TAG, "${m.name}($key) -> forced false")
                             return@intercept false
                         }

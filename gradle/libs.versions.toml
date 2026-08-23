@@ -6,8 +6,9 @@ appcompat = "1.7.1"
 lifecycleRuntimeKtx = "2.11.0"
 activityCompose = "1.13.0"
 coroutines = "1.11.0"
-# Compose BOM 2026.08.00 ships a stable material3 with the Expressive APIs,
-# so no explicit material3 override is required anymore.
+# compose-bom-alpha exposes the Material 3 Expressive APIs (MaterialExpressiveTheme,
+# MotionScheme, ...) as public/experimental. The stable compose-bom of the same
+# version keeps them `internal`, so we use the alpha channel to enable Expressive.
 composeBom = "2026.08.00"
 libxposed = "102.0.0"
 licensee = "1.14.1"
@@ -21,12 +22,12 @@ androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecyc
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeKtx" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleRuntimeKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
-androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom-alpha", version.ref = "composeBom" }
 androidx-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
-# Material 3 (Expressive APIs are stable in the current Compose BOM).
+# Material 3. The alpha BOM makes the Expressive APIs available.
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }

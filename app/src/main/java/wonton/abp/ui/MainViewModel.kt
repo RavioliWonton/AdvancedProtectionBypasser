@@ -25,6 +25,17 @@ data class UiState(
     val moduleActive: Boolean = false,
     val selected: Set<String> = emptySet(),
     val installerPackage: String = Prefs.DEFAULT_INSTALLER,
+    val bypassEcm: Boolean = Prefs.DEFAULT_BYPASS,
+    val bypassUserRestriction: Boolean = Prefs.DEFAULT_BYPASS,
+    /** Bound framework name (e.g. "LSPosed"), or null when the module is inactive. */
+    val frameworkName: String? = null,
+    /** Bound framework version, or null when the module is inactive. */
+    val frameworkVersion: String? = null,
+    /**
+     * Number of processes currently hooked by this module, or null when the
+     * framework does not expose it. Acts as a live "hook count".
+     */
+    val hookedTargetCount: Int? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -57,7 +68,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             moduleActive = store.isAvailable,
             selected = store.getSelectedPackages(),
             installerPackage = store.getInstallerPackage(),
+            bypassEcm = store.getBypassEcm(),
+            bypassUserRestriction = store.getBypassUserRestriction(),
+            frameworkName = store.getFrameworkName(),
+            frameworkVersion = store.getFrameworkVersion(),
+            hookedTargetCount = store.getHookedTargetCount(),
         )
+    }
+
+    /** Re-reads the live module status (used when opening the status page). */
+    fun refreshStatus() {
+        refreshFromStore()
     }
 
     fun loadApps() {
@@ -100,5 +121,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val store = currentStore()
         store.setInstallerPackage(clean)
         _state.value = _state.value.copy(installerPackage = store.getInstallerPackage())
+    }
+
+    fun setBypassEcm(enabled: Boolean) {
+        val store = currentStore()
+        store.setBypassEcm(enabled)
+        _state.value = _state.value.copy(bypassEcm = store.getBypassEcm())
+    }
+
+    fun setBypassUserRestriction(enabled: Boolean) {
+        val store = currentStore()
+        store.setBypassUserRestriction(enabled)
+        _state.value = _state.value.copy(bypassUserRestriction = store.getBypassUserRestriction())
     }
 }

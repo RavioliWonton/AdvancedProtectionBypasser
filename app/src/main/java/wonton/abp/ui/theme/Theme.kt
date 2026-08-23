@@ -2,7 +2,9 @@ package wonton.abp.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.darkColorScheme
@@ -39,6 +41,7 @@ private val DarkColors = darkColorScheme(
     surfaceContainer = Color(0xFF211F26),
 )
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ABPTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -47,14 +50,19 @@ fun ABPTheme(
     val context = LocalContext.current
     val supportsDynamic = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val colorScheme = when {
+        // Material You dynamic color (Android 12+) — the expressive, wallpaper
+        // derived palette. Falls back to the bundled violet scheme below.
         supportsDynamic && darkTheme -> dynamicDarkColorScheme(context)
         supportsDynamic -> dynamicLightColorScheme(context)
         darkTheme -> DarkColors
         else -> LightColors
     }
 
-    MaterialTheme(
+    // Material 3 Expressive: springier motion plus the expressive shape/typography
+    // defaults. Dynamic color (Material You) is still applied via [colorScheme].
+    MaterialExpressiveTheme(
         colorScheme = colorScheme,
+        motionScheme = MotionScheme.expressive(),
         content = content,
     )
 }
