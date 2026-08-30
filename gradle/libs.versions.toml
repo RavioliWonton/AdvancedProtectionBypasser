@@ -9,7 +9,7 @@ coroutines = "1.11.0"
 # compose-bom-alpha exposes the Material 3 Expressive APIs (MaterialExpressiveTheme,
 # MotionScheme, ...) as public/experimental. The stable compose-bom of the same
 # version keeps them `internal`, so we use the alpha channel to enable Expressive.
-composeBom = "2026.08.00"
+composeBom = "2026.08.01"
 libxposed = "102.0.0"
 licensee = "1.14.1"
 
