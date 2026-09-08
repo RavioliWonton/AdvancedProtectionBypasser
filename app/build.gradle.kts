@@ -9,15 +9,20 @@ plugins {
 
 android {
     namespace = "wonton.abp"
+    // Compile against the Android 17 (API 37) minor release 37.2. Minor compile
+    // SDK versions are supported (compileSdk + compileSdkMinor); note that
+    // targetSdk CANNOT carry a minor version - the manifest attribute is an
+    // integer API level only, so it stays at 37.
     compileSdk = 37
+    compileSdkMinor = 2
     buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "wonton.abp"
         minSdk = 26
         targetSdk = 37
-        versionCode = 9
-        versionName = "1.2.0"
+        versionCode = 10
+        versionName = "1.2.1"
     }
 
     signingConfigs {
