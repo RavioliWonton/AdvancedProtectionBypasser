@@ -1,13 +1,24 @@
 package wonton.abp.install
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageInstaller
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import wonton.abp.App
 import wonton.abp.common.Prefs
 import wonton.abp.data.ConfigStore
@@ -38,8 +49,38 @@ import java.util.concurrent.atomic.AtomicBoolean
 class InstallProxyActivity : Activity() {
 
     private val finished = AtomicBoolean(false)
-    private val copiedFiles = mutableListOf<File>()
-    private var pollThread: Thread? = null
+
+    /**
+     * Scope for the install flow. Cancelled in [onDestroy] so the wait loop can
+     * never outlive the activity.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * Wake-up signal for [awaitInstalled]. Conflated: the loop only needs to
+     * know that *something* happened, and a signal sent while the loop is
+     * checking is kept for the next iteration.
+     */
+    private val installEvents = Channel<Unit>(Channel.CONFLATED)
+
+    private var receiverRegistered = false
+
+    /**
+     * System package add/replace/remove events. The module's installers go
+     * through `PackageInstaller`, which broadcasts one of these as soon as the
+     * package is on disk, so the wait loop can return immediately instead of
+     * waiting for its next tick.
+     */
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            Log.i(
+                TAG,
+                "[2A] package event: action=${intent?.action} " +
+                    "pkg=${intent?.data?.schemeSpecificPart}"
+            )
+            installEvents.trySend(Unit)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,8 +90,19 @@ class InstallProxyActivity : Activity() {
                 "action=${received.action} uri=${received.data} " +
                 "installerExtra=${received.getStringExtra(EXTRA_ABP_INSTALLER)} " +
                 "returnResult=${received.getBooleanExtra(Intent.EXTRA_RETURN_RESULT, false)} " +
-                "extraPkg=${received.getStringExtra(Intent.EXTRA_PACKAGE_NAME)}"
+                "extraPkg=${received.getStringExtra(Intent.EXTRA_PACKAGE_NAME)} " +
+                "recreated=${savedInstanceState != null}"
         )
+        if (savedInstanceState != null) {
+            // Recreated after process death. The first run already handed the
+            // APK to the installer; re-running would stage a second copy and
+            // launch the installer again, and the caller would never get a
+            // result. configChanges in the manifest keeps the common rotation
+            // case from reaching this branch at all.
+            Log.w(TAG, "[2A] recreated after process death; not re-running the install flow")
+            finishWithResult(pkg = null, success = false)
+            return
+        }
         // The module (system_server) stages APKs into our cache; make sure the
         // cache subtree is traversable/writable for it. This also persists.
         ensureCacheAccessible()
@@ -65,45 +117,56 @@ class InstallProxyActivity : Activity() {
             return
         }
 
-        // 1. Copy the APK into our own cache (we hold the caller's read grant).
-        val copied = copyToCache(apkUri)
-        Log.i(TAG, "[2A] copyToCache -> $copied")
-        if (copied == null) {
-            Log.w(TAG, "[2A] abort: failed to copy APK")
-            finishWithResult(pkg = null, success = false)
-            return
-        }
-        copiedFiles += copied
+        runInstallFlow(apkUri, installer)
+    }
 
-        // 2. Parse target package + versionCode from the APK itself.
-        val archive = runCatching {
-            packageManager.getPackageArchiveInfo(copied.absolutePath, 0)
-        }.getOrNull()
-        val targetPkg = archive?.packageName
-        val targetVersion = archive?.longVersionCode ?: 0L
-        Log.i(TAG, "[2A] parsed apk: pkg=$targetPkg version=$targetVersion")
-        if (targetPkg == null) {
-            Log.w(TAG, "[2A] abort: could not parse APK")
-            finishWithResult(pkg = null, success = false)
-            return
-        }
+    /**
+     * Runs the whole install hand-off as a coroutine: the blocking parts (copying
+     * the APK, parsing it, querying the package manager) hop to
+     * [Dispatchers.IO], while everything touching activity state stays on the
+     * main thread.
+     */
+    private fun runInstallFlow(apkUri: Uri, installer: String) {
+        scope.launch {
+            // 1. Copy the APK into our own cache (we hold the caller's read grant).
+            val copied = withContext(Dispatchers.IO) { copyToCache(apkUri) }
+            Log.i(TAG, "[2A] copyToCache -> $copied")
+            if (copied == null) {
+                Log.w(TAG, "[2A] abort: failed to copy APK")
+                finishWithResult(pkg = null, success = false)
+                return@launch
+            }
 
-        // 3. Hand the APK to the configured installer.
-        val launched = launchInstaller(copied, installer)
-        Log.i(TAG, "[2A] launchInstaller($installer) -> $launched")
-        if (!launched) {
-            finishWithResult(targetPkg, success = false)
-            return
-        }
+            // 2. Parse target package + versionCode from the APK itself.
+            val archive = withContext(Dispatchers.IO) {
+                runCatching { packageManager.getPackageArchiveInfo(copied.absolutePath, 0) }
+                    .getOrNull()
+            }
+            val targetPkg = archive?.packageName
+            val targetVersion = archive?.longVersionCode ?: 0L
+            Log.i(TAG, "[2A] parsed apk: pkg=$targetPkg version=$targetVersion")
+            if (targetPkg == null) {
+                Log.w(TAG, "[2A] abort: could not parse APK")
+                finishWithResult(pkg = null, success = false)
+                return@launch
+            }
 
-        // 4. Stay alive (invisible) and poll for the install result.
-        pollThread = Thread {
-            val success = pollUntilInstalled(targetPkg, targetVersion)
-            Log.i(TAG, "[2A] poll finished: success=$success")
-            runOnUiThread { finishWithResult(targetPkg, success) }
-        }.also {
-            it.isDaemon = true
-            it.start()
+            // 3. Subscribe to the system's package events so the wait below can
+            //    react immediately (the periodic tick stays as a fallback).
+            registerPackageReceiver()
+
+            // 4. Hand the APK to the configured installer (startActivity, main thread).
+            val launched = launchInstaller(copied, installer)
+            Log.i(TAG, "[2A] launchInstaller($installer) -> $launched")
+            if (!launched) {
+                finishWithResult(targetPkg, success = false)
+                return@launch
+            }
+
+            // 5. Stay alive (invisible) and wait for the install result.
+            val success = awaitInstalled(targetPkg, targetVersion)
+            Log.i(TAG, "[2A] wait finished: success=$success")
+            finishWithResult(targetPkg, success)
         }
     }
 
@@ -134,11 +197,19 @@ class InstallProxyActivity : Activity() {
         apks.listFiles()?.forEach { runCatching { it.delete() } }
         val out = File(apks, "install-${System.currentTimeMillis()}.apk")
         Log.i(TAG, "[2A] copying uri=$uri to ${out.absolutePath}")
-        contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(out).use { output -> input.copyTo(output) }
-        } ?: run {
-            Log.w(TAG, "[2A] openInputStream returned null for $uri (no read grant?)")
+        // file:// URIs cannot be opened through the content resolver, so read
+        // the path directly as a fallback (best effort; it may be unreadable
+        // when it belongs to another app).
+        val input = when (uri.scheme) {
+            "file" -> uri.path?.let { File(it) }?.takeIf { it.isFile }?.inputStream()
+            else -> contentResolver.openInputStream(uri)
+        }
+        if (input == null) {
+            Log.w(TAG, "[2A] could not open $uri (no read grant / file not readable?)")
             return null
+        }
+        input.use { source ->
+            FileOutputStream(out).use { target -> source.copyTo(target) }
         }
         Log.i(TAG, "[2A] copied ${out.length()} bytes")
         out
@@ -161,32 +232,57 @@ class InstallProxyActivity : Activity() {
         false
     }
 
-    private fun pollUntilInstalled(pkg: String, targetVersion: Long): Boolean {
-        val pm = packageManager
+    private fun registerPackageReceiver() {
+        if (receiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addDataScheme("package")
+        }
+        // These are protected system broadcasts, so NOT_EXPORTED still delivers
+        // them (other apps cannot spoof them either) while satisfying the
+        // mandatory flag on targetSdk 34+.
+        ContextCompat.registerReceiver(
+            this, packageReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        receiverRegistered = true
+        Log.i(TAG, "[2A] package receiver registered")
+    }
+
+    /**
+     * Waits until [pkg] is installed at [targetVersion], or [POLL_TIMEOUT_MS]
+     * elapses.
+     *
+     * Rather than a fixed-interval poll, it blocks on [installEvents]: a package
+     * add/replace broadcast wakes it up, so the result is noticed as soon as the
+     * install lands. The [POLL_INTERVAL_MS] timeout is the safety net for a
+     * signal that never arrives (install finished before the receiver was
+     * registered, broadcast not delivered, ...), which keeps the worst case
+     * identical to plain polling.
+     */
+    private suspend fun awaitInstalled(pkg: String, targetVersion: Long): Boolean {
         val deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS
         var i = 0
-        while (System.currentTimeMillis() < deadline) {
-            if (finished.get()) {
-                Log.i(TAG, "[2A] poll aborted (activity finished)")
+        while (true) {
+            val installed = isInstalled(pkg, targetVersion)
+            Log.i(TAG, "[2A] wait #${i++}: installed=$installed")
+            if (installed) return true
+            if (System.currentTimeMillis() >= deadline) {
+                Log.i(TAG, "[2A] wait timed out for $pkg")
                 return false
             }
-            Thread.sleep(POLL_INTERVAL_MS)
-            val info = try {
-                pm.getPackageInfo(pkg, 0)
-            } catch (e: PackageManager.NameNotFoundException) {
-                null
-            }
-            val current = info?.longVersionCode
-            Log.i(
-                TAG,
-                "[2A] poll #${i++}: installed=${info != null} currentVersion=$current targetVersion=$targetVersion"
-            )
-            if (info != null && (targetVersion == 0L || current != null && current >= targetVersion)) {
-                return true
-            }
+            // receiveCatching() makes a closed channel non-fatal.
+            withTimeoutOrNull(POLL_INTERVAL_MS) { installEvents.receiveCatching() }
         }
-        Log.i(TAG, "[2A] poll timed out for $pkg")
-        return false
+    }
+
+    private suspend fun isInstalled(pkg: String, targetVersion: Long): Boolean {
+        val info = withContext(Dispatchers.IO) {
+            runCatching { packageManager.getPackageInfo(pkg, 0) }.getOrNull()
+        }
+        val current = info?.longVersionCode
+        return info != null && (targetVersion == 0L || current != null && current >= targetVersion)
     }
 
     private fun finishWithResult(pkg: String?, success: Boolean) {
@@ -209,10 +305,17 @@ class InstallProxyActivity : Activity() {
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "[2A] Proxy onDestroy (cleaning ${copiedFiles.size} staged file(s))")
+        // Do NOT delete the staged APK here: the installer may still be reading
+        // it through the FileProvider while the install is in flight. Stale
+        // files are cleaned up by copyToCache() on the next run instead.
+        Log.i(TAG, "[2A] Proxy onDestroy")
         finished.set(true)
-        pollThread?.interrupt()
-        for (f in copiedFiles) runCatching { f.delete() }
+        scope.cancel()
+        if (receiverRegistered) {
+            runCatching { unregisterReceiver(packageReceiver) }
+            receiverRegistered = false
+        }
+        installEvents.close()
         super.onDestroy()
     }
 

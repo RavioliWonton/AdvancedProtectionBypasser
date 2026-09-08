@@ -68,12 +68,32 @@
           invisible activity. It hands the APK to the configured installer via
           ACTION_VIEW and, when the caller set EXTRA_RETURN_RESULT, polls
           PackageManager and returns EXTRA_INSTALL_RESULT to the caller.
+
+          theme: Theme.Translucent.NoTitleBar. NOT Theme.NoDisplay - that sets
+          windowNoDisplay=true, which makes Activity.mVisibleFromClient false and
+          Activity.performResume() then throws IllegalStateException for any app
+          with targetSdk > 22 unless the activity finished before onResume().
+          This proxy must stay alive until the install result is known.
+
+          configChanges: the proxy must NOT be recreated while it waits for the
+          install result, otherwise the flow would run twice (a second copy of
+          the APK plus a second installer launch) and the caller would never
+          receive a result.
+
+          launchMode: intentionally left at the default (standard). singleTask /
+          singleInstance would move the activity into its own task, which makes
+          the system cancel the activity result the caller is waiting for, and
+          singleTop would route a second install to onNewIntent() (not handled),
+          silently dropping it. Standard mode keeps the proxy in the caller's
+          task so setResult() reaches the caller through the resultTo chain; the
+          extra instances are short-lived and independent.
         -->
         <activity
             android:name=".install.InstallProxyActivity"
-            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale"
             android:excludeFromRecents="true"
-            android:theme="@style/Theme.ABP.Transparent"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             tools:ignore="ExportedActivity" />
 
         <!--

@@ -31,6 +31,12 @@
     <string name="settings_bypass_ecm_desc">For selected apps, lifts the "Restricted setting" block (Android 15+) so the install-from-unknown-sources toggle can be turned on. Off by default.</string>
     <string name="settings_bypass_user_restriction_title">Relax the unknown-sources install restriction</string>
     <string name="settings_bypass_user_restriction_desc">Lifts the system restriction that disables unknown-sources installs (used by Advanced Protection). This applies to the whole device, not a single app. Only enable if you understand the risk. Off by default.</string>
+    <string name="settings_hijack_explicit_title">Hijack install intents with an explicit target</string>
+    <string name="settings_hijack_explicit_desc">Also redirect install intents that already name a target activity or package (for example the system installer). Enable only if an app still shows the system confirmation dialog. Off by default.</string>
+
+    <!-- No Google Play services notice (informational only) -->
+    <string name="no_gms_notice">Google Play services was not found. This app still works normally without it — please continue only if you know what you are doing.</string>
+    <string name="no_gms_notice_dismiss">Dismiss notice</string>
 
     <!-- About dialog -->
     <string name="about_message">Advanced Protection Bypasser\n\nAn open-source Xposed module + Jetpack Compose app.\n\nForce-grants install permission to selected apps and redirects their install intents to a configurable installer.\n\nLicensed under the GNU General Public License v3.0 (GPLv3). You are free to use, study, share and modify it under the terms of that license.</string>

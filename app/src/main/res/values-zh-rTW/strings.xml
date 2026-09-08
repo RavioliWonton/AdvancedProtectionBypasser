@@ -31,6 +31,12 @@
     <string name="settings_bypass_ecm_desc">對選取的應用程式，解除「受限設定」攔截（Android 15+），使其可以開啟「允許來自此來源的安裝」開關。預設關閉。</string>
     <string name="settings_bypass_user_restriction_title">放開未知來源安裝限制</string>
     <string name="settings_bypass_user_restriction_desc">解除系統停用未知來源安裝的限制（進階保護會啟用它）。此項對整個裝置生效，而非單一應用程式。請在了解風險後再開啟。預設關閉。</string>
+    <string name="settings_hijack_explicit_title">劫持已指定目標的安裝意圖</string>
+    <string name="settings_hijack_explicit_desc">連已經指定了目標 Activity 或套件名稱（例如系統安裝器）的安裝意圖也一併重新導向。僅當某些應用程式仍彈出系統確認對話框時再開啟。預設關閉。</string>
+
+    <!-- No Google Play services notice (informational only) -->
+    <string name="no_gms_notice">未偵測到 Google 服務。在沒有 Google 服務的情況下，本 App 仍會照正常功能運作——請確認你知道自己在做什麼後再繼續使用。</string>
+    <string name="no_gms_notice_dismiss">關閉提示</string>
 
     <!-- About dialog -->
     <string name="about_message">Advanced Protection Bypasser\n\n一個開源的 Xposed 模組 + Jetpack Compose 應用程式。\n\n為選取的應用程式強制授予安裝權限，並將其安裝意圖重新導向到指定的安裝器。\n\n本專案基於 GNU 通用公共授權條款第 3 版（GPLv3）開源。你可以在該授權條款下自由使用、研究、分享與修改本軟體。</string>

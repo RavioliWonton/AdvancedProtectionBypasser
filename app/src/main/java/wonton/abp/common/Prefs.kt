@@ -34,4 +34,15 @@ object Prefs {
 
     /** Default for both advanced bypass toggles. */
     const val DEFAULT_BYPASS = false
+
+    /**
+     * Boolean (default false): also hijack `ACTION_INSTALL_PACKAGE` intents that
+     * already name an explicit target activity or package (e.g. the system
+     * installer). Off by default because it overrides an intentional choice by
+     * the calling app.
+     */
+    const val KEY_HIJACK_EXPLICIT = "hijack_explicit"
+
+    /** Default for [KEY_HIJACK_EXPLICIT]. */
+    const val DEFAULT_HIJACK_EXPLICIT = false
 }

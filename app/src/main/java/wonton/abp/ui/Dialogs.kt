@@ -49,9 +49,11 @@ fun SettingsDialog(
     initialInstaller: String,
     bypassEcm: Boolean,
     bypassUserRestriction: Boolean,
+    hijackExplicit: Boolean,
     moduleActive: Boolean,
     onBypassEcmChange: (Boolean) -> Unit,
     onBypassUserRestrictionChange: (Boolean) -> Unit,
+    onHijackExplicitChange: (Boolean) -> Unit,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -110,6 +112,14 @@ fun SettingsDialog(
                     checked = bypassUserRestriction,
                     moduleActive = moduleActive,
                     onCheckedChange = onBypassUserRestrictionChange,
+                )
+                Spacer(Modifier.height(12.dp))
+                SwitchRow(
+                    title = stringResource(R.string.settings_hijack_explicit_title),
+                    desc = stringResource(R.string.settings_hijack_explicit_desc),
+                    checked = hijackExplicit,
+                    moduleActive = moduleActive,
+                    onCheckedChange = onHijackExplicitChange,
                 )
             }
         },

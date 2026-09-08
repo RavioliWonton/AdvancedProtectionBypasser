@@ -26,6 +26,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Info
@@ -48,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,7 +107,30 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
     // Bottom-navigation destination: 0 = status page (home), 1 = app list.
     var selectedTab by remember { mutableStateOf(0) }
 
-    val visibleApps = if (showSystemApps) apps else apps.filterNot { it.isSystem }
+    // Snapshot of the selection used to pin selected apps to the top of the
+    // list. It is refreshed only when the app-list tab is (re)entered, so
+    // toggling rows inside the list updates the checkboxes and the counter
+    // immediately but never re-orders rows under the user's finger.
+    var pinnedSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 1) pinnedSelection = state.selected
+    }
+
+    // Visible apps (system apps hidden unless enabled), pinned-first ordering,
+    // and the counter. The counter only counts apps that are currently visible,
+    // so hidden system apps are excluded until the user opts to show them.
+    val (orderedApps, selectedCount) = remember(
+        apps,
+        showSystemApps,
+        pinnedSelection,
+        state.selected,
+    ) {
+        val visible = if (showSystemApps) apps else apps.filterNot { it.isSystem }
+        // Stable sort: within the pinned/unpinned groups the repository order
+        // (install permission, then label) is preserved.
+        val ordered = visible.sortedByDescending { it.packageName in pinnedSelection }
+        ordered to visible.count { it.packageName in state.selected }
+    }
 
     Scaffold(
         topBar = {
@@ -217,14 +242,17 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when {
                 // Home tab: status is derived synchronously, nothing to load.
-                selectedTab == 0 -> StatusScreen(state)
+                selectedTab == 0 -> StatusScreen(
+                    state = state,
+                    onDismissNoGmsNotice = vm::dismissNoGmsNotice,
+                )
                 // App list still needs the (potentially slow) package scan.
                 state.loading -> LoadingView()
                 else -> AppList(
-                    apps = visibleApps,
+                    apps = orderedApps,
                     selected = state.selected,
                     moduleActive = state.moduleActive,
-                    selectedCount = state.selected.size,
+                    selectedCount = selectedCount,
                     onToggle = vm::toggle,
                 )
             }
@@ -236,9 +264,11 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
             initialInstaller = state.installerPackage,
             bypassEcm = state.bypassEcm,
             bypassUserRestriction = state.bypassUserRestriction,
+            hijackExplicit = state.hijackExplicit,
             moduleActive = state.moduleActive,
             onBypassEcmChange = vm::setBypassEcm,
             onBypassUserRestrictionChange = vm::setBypassUserRestriction,
+            onHijackExplicitChange = vm::setHijackExplicit,
             onConfirm = {
                 vm.setInstallerPackage(it)
                 showSettingsDialog = false
@@ -253,6 +283,48 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
 
     if (showLanguageDialog) {
         LanguageDialog(onDismiss = { showLanguageDialog = false })
+    }
+}
+
+/**
+ * Dismissible notice shown on the status page when Google Play services is not
+ * installed. It is purely informational - nothing is gated on it; the app keeps
+ * working normally. Closing it hides it for good.
+ */
+@Composable
+private fun NoGmsNotice(onDismiss: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 20.dp, top = 12.dp, end = 4.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Info,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(24.dp),
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = stringResource(R.string.no_gms_notice),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 4.dp),
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.no_gms_notice_dismiss),
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
+        }
     }
 }
 
@@ -367,13 +439,19 @@ private fun AppList(
 // -------------------------------------------------------------------------
 
 @Composable
-private fun StatusScreen(state: UiState) {
+private fun StatusScreen(state: UiState, onDismissNoGmsNotice: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
+        // Only shown while the module is active: when it is not enabled the app
+        // is not doing anything anyway, so the notice would just be noise.
+        if (state.moduleActive && !state.gmsAvailable && !state.noGmsNoticeDismissed) {
+            NoGmsNotice(onDismiss = onDismissNoGmsNotice)
+            Spacer(Modifier.height(16.dp))
+        }
         StatusHeaderCard(state)
         Spacer(Modifier.height(16.dp))
         StatusDetailCard(state)

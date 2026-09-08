@@ -21,8 +21,8 @@ android {
         applicationId = "wonton.abp"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10
-        versionName = "1.2.1"
+        versionCode = 11
+        versionName = "2.0.0"
     }
 
     signingConfigs {
@@ -81,6 +81,11 @@ licensee {
     allowUrl("https://github.com/libxposed/service/blob/master/LICENSE") {
         because("libxposed is licensed Apache-2.0; the POM just links to the raw LICENSE file")
     }
+    // Google Play services (play-services-base/-basement/-tasks) uses the
+    // Android SDK license instead of an SPDX id.
+    allowUrl("https://developer.android.com/studio/terms.html") {
+        because("Google Play services ships under the Android Software Development Kit License")
+    }
 }
 
 dependencies {
@@ -96,6 +101,11 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Google Play services detection (GoogleApiAvailabilityLight). Every hook is
+    // gated on Play services being present: the Advanced Protection install path
+    // this module targets is provided by Play services.
+    implementation(libs.play.services.base)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)

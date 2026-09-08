@@ -8,10 +8,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import wonton.abp.App
+import wonton.abp.common.Gms
 import wonton.abp.common.Prefs
 import wonton.abp.data.AppInfo
 import wonton.abp.data.AppRepository
 import wonton.abp.data.ConfigStore
+import wonton.abp.data.UiPrefs
 
 /**
  * UI state for the main screen.
@@ -27,6 +29,15 @@ data class UiState(
     val installerPackage: String = Prefs.DEFAULT_INSTALLER,
     val bypassEcm: Boolean = Prefs.DEFAULT_BYPASS,
     val bypassUserRestriction: Boolean = Prefs.DEFAULT_BYPASS,
+    /** Also hijack install intents that name an explicit target. Off by default. */
+    val hijackExplicit: Boolean = Prefs.DEFAULT_HIJACK_EXPLICIT,
+    /**
+     * Whether Google Play services is installed. When it is not, the status page
+     * shows a dismissible informational notice; nothing is gated on it.
+     */
+    val gmsAvailable: Boolean = true,
+    /** User closed the "no Google Play services" notice on the status page. */
+    val noGmsNoticeDismissed: Boolean = false,
     /** Bound framework name (e.g. "LSPosed"), or null when the module is inactive. */
     val frameworkName: String? = null,
     /** Bound framework version, or null when the module is inactive. */
@@ -41,8 +52,14 @@ data class UiState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = AppRepository(app)
+    private val uiPrefs = UiPrefs(app)
 
-    private val _state = MutableStateFlow(UiState())
+    private val _state = MutableStateFlow(
+        UiState(
+            gmsAvailable = Gms.isAvailable(app),
+            noGmsNoticeDismissed = uiPrefs.isNoGmsNoticeDismissed(),
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     /** Installed apps, loaded once and kept separate from [state]. */
@@ -70,6 +87,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             installerPackage = store.getInstallerPackage(),
             bypassEcm = store.getBypassEcm(),
             bypassUserRestriction = store.getBypassUserRestriction(),
+            hijackExplicit = store.getHijackExplicit(),
             frameworkName = store.getFrameworkName(),
             frameworkVersion = store.getFrameworkVersion(),
             hookedTargetCount = store.getHookedTargetCount(),
@@ -133,5 +151,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val store = currentStore()
         store.setBypassUserRestriction(enabled)
         _state.value = _state.value.copy(bypassUserRestriction = store.getBypassUserRestriction())
+    }
+
+    fun setHijackExplicit(enabled: Boolean) {
+        val store = currentStore()
+        store.setHijackExplicit(enabled)
+        _state.value = _state.value.copy(hijackExplicit = store.getHijackExplicit())
+    }
+
+    /**
+     * Closes the "no Google Play services" notice on the status page. The choice
+     * is persisted locally and the notice never shows again.
+     */
+    fun dismissNoGmsNotice() {
+        uiPrefs.dismissNoGmsNotice()
+        _state.value = _state.value.copy(noGmsNoticeDismissed = true)
     }
 }

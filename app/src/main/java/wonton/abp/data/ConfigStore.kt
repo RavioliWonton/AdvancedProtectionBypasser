@@ -48,6 +48,10 @@ class ConfigStore(private val service: XposedService?) {
         prefs?.getBoolean(Prefs.KEY_BYPASS_USER_RESTRICTION, Prefs.DEFAULT_BYPASS)
             ?: Prefs.DEFAULT_BYPASS
 
+    fun getHijackExplicit(): Boolean =
+        prefs?.getBoolean(Prefs.KEY_HIJACK_EXPLICIT, Prefs.DEFAULT_HIJACK_EXPLICIT)
+            ?: Prefs.DEFAULT_HIJACK_EXPLICIT
+
     fun setSelectedPackages(packages: Set<String>) {
         prefs?.edit()?.putStringSet(Prefs.KEY_SELECTED, packages)?.apply()
     }
@@ -62,5 +66,9 @@ class ConfigStore(private val service: XposedService?) {
 
     fun setBypassUserRestriction(enabled: Boolean) {
         prefs?.edit()?.putBoolean(Prefs.KEY_BYPASS_USER_RESTRICTION, enabled)?.apply()
+    }
+
+    fun setHijackExplicit(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(Prefs.KEY_HIJACK_EXPLICIT, enabled)?.apply()
     }
 }
