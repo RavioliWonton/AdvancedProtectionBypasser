@@ -54,11 +54,12 @@ class XposedEntry : XposedModule() {
     }
 
     override fun onSystemServerStarting(param: SystemServerStartingParam) {
-        log(Log.INFO, TAG, "onSystemServerStarting")
+        log(Log.INFO, TAG, "=== onSystemServerStarting: ABP module active in system_server ===")
         val cl = param.classLoader
         hookInstallPermission(cl)
         hookActivityStart(cl)
         hookPackageInstallerSession(cl)
+        log(Log.INFO, TAG, "=== onSystemServerStarting done: hooks installed ===")
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
@@ -526,8 +527,14 @@ class XposedEntry : XposedModule() {
                     hook(m).intercept { chain ->
                         try {
                             val caller = chain.getArg(callerIndex) as? String
-                            if (caller != null && caller != OWN_PACKAGE && isSelected(caller)) {
+                            val action = if (intentIndex >= 0) (chain.getArg(intentIndex) as? Intent)?.action else null
+                            val selected = caller != null && caller != OWN_PACKAGE && isSelected(caller)
+                            if (caller != null && (selected || action == ACTION_INSTALL_PACKAGE)) {
+                                log(Log.INFO, TAG, "startActivity($mName): caller=$caller selected=$selected action=$action")
+                            }
+                            if (selected) {
                                 val installer = installerPackage()
+                                log(Log.INFO, TAG, "startActivity($mName): rewriting install intents for selected caller=$caller (installer=$installer)")
                                 if (intentIndex >= 0) {
                                     (chain.getArg(intentIndex) as? Intent)
                                         ?.let { rewriteInstallIntent(it, installer, caller) }
@@ -564,24 +571,43 @@ class XposedEntry : XposedModule() {
         params.indexOfFirst { it == String::class.java }
 
     private fun rewriteInstallIntent(intent: Intent, installer: String, caller: String) {
-        if (intent.action != ACTION_INSTALL_PACKAGE) return
-        if (installer.isBlank()) return
-        // Don't override an explicit component / package already chosen.
-        if (intent.`package` != null || intent.component != null) return
-        val uri = intent.data
-        if (uri == null) {
-            // No APK to hand off; keep the legacy setPackage behavior.
-            intent.setPackage(installer)
-            log(Log.INFO, TAG, "Redirected install intent (no uri) from $caller to $installer")
+        log(
+            Log.INFO, TAG,
+            "rewriteInstallIntent: caller=$caller action=${intent.action} uri=${intent.data} " +
+                "pkg=${intent.`package`} component=${intent.component} " +
+                "returnResult=${intent.getBooleanExtra(Intent.EXTRA_RETURN_RESULT, false)} " +
+                "extraPkg=${intent.getStringExtra(Intent.EXTRA_PACKAGE_NAME)}"
+        )
+        if (intent.action != ACTION_INSTALL_PACKAGE) {
+            log(Log.INFO, TAG, "rewriteInstallIntent: skip (action != ACTION_INSTALL_PACKAGE)")
             return
         }
-        // Route through our proxy so it can hand the APK to the installer via
-        // ACTION_VIEW and return EXTRA_INSTALL_RESULT to the caller.
+        if (installer.isBlank()) {
+            log(Log.INFO, TAG, "rewriteInstallIntent: skip (installer blank)")
+            return
+        }
+        if (intent.`package` != null || intent.component != null) {
+            log(
+                Log.INFO, TAG,
+                "rewriteInstallIntent: skip (explicit package=${intent.`package`} component=${intent.component})"
+            )
+            return
+        }
+        val uri = intent.data
+        if (uri == null) {
+            intent.setPackage(installer)
+            log(Log.INFO, TAG, "rewriteInstallIntent: no uri -> setPackage($installer)")
+            return
+        }
         intent.component = PROXY_COMPONENT
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         intent.putExtra(EXTRA_ABP_INSTALLER, installer)
         intent.putExtra(EXTRA_ABP_CALLER, caller)
-        log(Log.INFO, TAG, "Redirected install intent from $caller to proxy (installer=$installer)")
+        log(
+            Log.INFO, TAG,
+            "rewriteInstallIntent: -> proxy ${PROXY_COMPONENT.className} " +
+                "(installer=$installer, uri=${uri.scheme}://...)"
+        )
     }
 
     // ---------------------------------------------------------------------
@@ -621,11 +647,16 @@ class XposedEntry : XposedModule() {
                         val session = chain.getThisObject()
                         if (session != null) {
                             val installer = sessionInstallerPackage(session)
-                            if (installer != null && installer != OWN_PACKAGE && isSelected(installer)) {
+                            val sid = sessionId(session)
+                            val selected = installer != null && installer != OWN_PACKAGE && isSelected(installer)
+                            log(Log.INFO, TAG, "Session.commit: sid=$sid installer=$installer selected=$selected")
+                            if (selected) {
                                 handled = true
-                                log(Log.INFO, TAG, "Intercepting session commit from selected app $installer")
+                                log(Log.INFO, TAG, "Session.commit: INTERCEPTING commit for selected app $installer (sid=$sid)")
                                 proxySessionInstall(session, installer)
                             }
+                        } else {
+                            log(Log.WARN, TAG, "Session.commit: thisObject is null")
                         }
                     } catch (t: Throwable) {
                         log(Log.WARN, TAG, "PackageInstallerSession.commit intercept failed", t)
@@ -653,7 +684,9 @@ class XposedEntry : XposedModule() {
                         val session = chain.getThisObject()
                         if (session != null) {
                             val installer = sessionInstallerPackage(session)
-                            if (installer != null && installer != OWN_PACKAGE && isSelected(installer)) {
+                            val selected = installer != null && installer != OWN_PACKAGE && isSelected(installer)
+                            log(Log.INFO, TAG, "requestUserPreapproval: installer=$installer selected=$selected")
+                            if (selected) {
                                 handled = true
                                 log(Log.INFO, TAG, "Swallowing requestUserPreapproval from $installer")
                             }
@@ -677,11 +710,13 @@ class XposedEntry : XposedModule() {
      * background thread so the commit Binder call returns immediately.
      */
     private fun proxySessionInstall(session: Any, installer: String) {
+        log(Log.INFO, TAG, "[B] proxySessionInstall start: installer=$installer")
         val ctx = systemContext()
         val receiver = sessionRemoteStatusReceiver(session)
         val baseApk = sessionBaseApk(session)
+        log(Log.INFO, TAG, "[B] probe: ctx=${ctx != null} receiver=${receiver != null} baseApk=$baseApk")
         if (ctx == null || receiver == null || baseApk == null) {
-            log(Log.WARN, TAG, "Cannot proxy session install (ctx=$ctx receiver=$receiver apk=$baseApk)")
+            log(Log.WARN, TAG, "[B] Cannot proxy session install (ctx=$ctx receiver=$receiver apk=$baseApk)")
             sendSessionStatus(session, null, false, "unable to stage apk")
             return
         }
@@ -691,6 +726,7 @@ class XposedEntry : XposedModule() {
         val pkg = archive?.packageName
         val version = archive?.longVersionCode ?: 0L
         val sid = sessionId(session)
+        log(Log.INFO, TAG, "[B] parsed staged apk: baseApk=${baseApk.absolutePath} pkg=$pkg version=$version sid=$sid")
         if (pkg == null) {
             sendSessionStatus(session, null, false, "could not parse staged apk")
             return
@@ -699,23 +735,28 @@ class XposedEntry : XposedModule() {
         Thread {
             try {
                 val copied = copyApkForInstaller(ctx, baseApk, sid)
+                log(Log.INFO, TAG, "[B] copyApkForInstaller -> $copied")
                 if (copied == null) {
                     sendSessionStatus(session, pkg, false, "failed to stage apk")
                     return@Thread
                 }
-                if (!launchInstallerViaView(ctx, copied, installer)) {
+                val launched = launchInstallerViaView(ctx, copied, installer)
+                log(Log.INFO, TAG, "[B] launchInstallerViaView($installer) -> $launched")
+                if (!launched) {
                     sendSessionStatus(session, pkg, false, "installer $installer unavailable")
                     return@Thread
                 }
                 // Release the original staged session; our copy is independent.
                 sessionAbandon(session)
+                log(Log.INFO, TAG, "[B] session abandoned; polling pkg=$pkg targetVersion=$version")
                 val success = pollPackageInstalled(ctx, pkg, version)
+                log(Log.INFO, TAG, "[B] poll result: $success")
                 sendSessionStatus(
                     session, pkg, success,
                     if (success) "Success" else "Install failed or timed out"
                 )
             } catch (t: Throwable) {
-                log(Log.WARN, TAG, "proxySessionInstall failed", t)
+                log(Log.WARN, TAG, "[B] proxySessionInstall failed", t)
                 sendSessionStatus(session, pkg, false, "internal error")
             }
         }.apply { isDaemon = true }.start()
@@ -813,17 +854,22 @@ class XposedEntry : XposedModule() {
     private fun pollPackageInstalled(ctx: Context, pkg: String, version: Long): Boolean {
         val pm = ctx.packageManager
         val deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS
+        var i = 0
         while (System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(POLL_INTERVAL_MS)
             } catch (e: InterruptedException) {
+                log(Log.WARN, TAG, "[B] poll interrupted")
                 return false
             }
             val info = runCatching { pm.getPackageInfo(pkg, 0) }.getOrNull()
-            if (info != null && (version == 0L || info.longVersionCode >= version)) {
+            val current = info?.longVersionCode
+            log(Log.INFO, TAG, "[B] poll #${i++}: installed=${info != null} currentVersion=$current targetVersion=$version")
+            if (info != null && (version == 0L || current != null && current >= version)) {
                 return true
             }
         }
+        log(Log.INFO, TAG, "[B] poll timed out for $pkg")
         return false
     }
 
@@ -833,8 +879,17 @@ class XposedEntry : XposedModule() {
      * receiver.
      */
     private fun sendSessionStatus(session: Any, pkg: String?, success: Boolean, msg: String) {
-        val receiver = sessionRemoteStatusReceiver(session) ?: return
-        val ctx = systemContext() ?: return
+        log(Log.INFO, TAG, "[B] sendSessionStatus: pkg=$pkg success=$success msg=$msg")
+        val receiver = sessionRemoteStatusReceiver(session)
+        val ctx = systemContext()
+        if (receiver == null) {
+            log(Log.WARN, TAG, "[B] sendSessionStatus: no status receiver available")
+            return
+        }
+        if (ctx == null) {
+            log(Log.WARN, TAG, "[B] sendSessionStatus: no system context")
+            return
+        }
         val sid = sessionId(session)
         val fillIn = Intent().apply {
             putExtra(PackageInstaller.EXTRA_SESSION_ID, sid)

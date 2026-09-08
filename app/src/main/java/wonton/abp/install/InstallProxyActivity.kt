@@ -43,22 +43,33 @@ class InstallProxyActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val received = intent
+        Log.i(
+            TAG, "[2A] Proxy onCreate: caller=${received.getStringExtra(EXTRA_ABP_CALLER)} " +
+                "action=${received.action} uri=${received.data} " +
+                "installerExtra=${received.getStringExtra(EXTRA_ABP_INSTALLER)} " +
+                "returnResult=${received.getBooleanExtra(Intent.EXTRA_RETURN_RESULT, false)} " +
+                "extraPkg=${received.getStringExtra(Intent.EXTRA_PACKAGE_NAME)}"
+        )
         // The module (system_server) stages APKs into our cache; make sure the
         // cache subtree is traversable/writable for it. This also persists.
         ensureCacheAccessible()
 
-        val intent = intent
-        val apkUri = intent.data
-        val installer = intent.getStringExtra(EXTRA_ABP_INSTALLER)
+        val apkUri = received.data
+        val installer = received.getStringExtra(EXTRA_ABP_INSTALLER)
             ?: readInstallerFromPrefs()
+        Log.i(TAG, "[2A] resolved: apkUri=$apkUri installer=$installer")
         if (apkUri == null || installer.isBlank()) {
+            Log.w(TAG, "[2A] abort: apkUri=$apkUri installer=$installer")
             finishWithResult(pkg = null, success = false)
             return
         }
 
         // 1. Copy the APK into our own cache (we hold the caller's read grant).
         val copied = copyToCache(apkUri)
+        Log.i(TAG, "[2A] copyToCache -> $copied")
         if (copied == null) {
+            Log.w(TAG, "[2A] abort: failed to copy APK")
             finishWithResult(pkg = null, success = false)
             return
         }
@@ -70,13 +81,17 @@ class InstallProxyActivity : Activity() {
         }.getOrNull()
         val targetPkg = archive?.packageName
         val targetVersion = archive?.longVersionCode ?: 0L
+        Log.i(TAG, "[2A] parsed apk: pkg=$targetPkg version=$targetVersion")
         if (targetPkg == null) {
+            Log.w(TAG, "[2A] abort: could not parse APK")
             finishWithResult(pkg = null, success = false)
             return
         }
 
         // 3. Hand the APK to the configured installer.
-        if (!launchInstaller(copied, installer)) {
+        val launched = launchInstaller(copied, installer)
+        Log.i(TAG, "[2A] launchInstaller($installer) -> $launched")
+        if (!launched) {
             finishWithResult(targetPkg, success = false)
             return
         }
@@ -84,6 +99,7 @@ class InstallProxyActivity : Activity() {
         // 4. Stay alive (invisible) and poll for the install result.
         pollThread = Thread {
             val success = pollUntilInstalled(targetPkg, targetVersion)
+            Log.i(TAG, "[2A] poll finished: success=$success")
             runOnUiThread { finishWithResult(targetPkg, success) }
         }.also {
             it.isDaemon = true
@@ -92,7 +108,7 @@ class InstallProxyActivity : Activity() {
     }
 
     private fun ensureCacheAccessible() {
-        runCatching {
+        val ok = runCatching {
             val apks = File(cacheDir, "apks")
             apks.mkdirs()
             dataDir?.setReadable(true, false)
@@ -103,7 +119,9 @@ class InstallProxyActivity : Activity() {
             apks.setReadable(true, false)
             apks.setExecutable(true, false)
             apks.setWritable(true, false)
-        }
+            apks.exists() && cacheDir.exists()
+        }.getOrDefault(false)
+        Log.i(TAG, "[2A] ensureCacheAccessible -> $ok (cache=${cacheDir.absolutePath})")
     }
 
     private fun readInstallerFromPrefs(): String = runCatching {
@@ -115,12 +133,17 @@ class InstallProxyActivity : Activity() {
         // Clear stale staged APKs from previous installs.
         apks.listFiles()?.forEach { runCatching { it.delete() } }
         val out = File(apks, "install-${System.currentTimeMillis()}.apk")
+        Log.i(TAG, "[2A] copying uri=$uri to ${out.absolutePath}")
         contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(out).use { output -> input.copyTo(output) }
-        } ?: return null
+        } ?: run {
+            Log.w(TAG, "[2A] openInputStream returned null for $uri (no read grant?)")
+            return null
+        }
+        Log.i(TAG, "[2A] copied ${out.length()} bytes")
         out
     } catch (t: Throwable) {
-        Log.w(TAG, "copyToCache failed", t)
+        Log.w(TAG, "[2A] copyToCache failed", t)
         null
     }
 
@@ -130,33 +153,48 @@ class InstallProxyActivity : Activity() {
             .setDataAndType(uri, INSTALLER_VIEW_MIME)
             .setPackage(installer)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        Log.i(TAG, "[2A] launching installer: intent=$i")
         startActivity(i)
         true
     } catch (t: Throwable) {
-        Log.w(TAG, "launchInstaller failed for $installer", t)
+        Log.w(TAG, "[2A] launchInstaller failed for $installer", t)
         false
     }
 
     private fun pollUntilInstalled(pkg: String, targetVersion: Long): Boolean {
         val pm = packageManager
         val deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS
+        var i = 0
         while (System.currentTimeMillis() < deadline) {
-            if (finished.get()) return false
+            if (finished.get()) {
+                Log.i(TAG, "[2A] poll aborted (activity finished)")
+                return false
+            }
             Thread.sleep(POLL_INTERVAL_MS)
             val info = try {
                 pm.getPackageInfo(pkg, 0)
             } catch (e: PackageManager.NameNotFoundException) {
                 null
             }
-            if (info != null && (targetVersion == 0L || info.longVersionCode >= targetVersion)) {
+            val current = info?.longVersionCode
+            Log.i(
+                TAG,
+                "[2A] poll #${i++}: installed=${info != null} currentVersion=$current targetVersion=$targetVersion"
+            )
+            if (info != null && (targetVersion == 0L || current != null && current >= targetVersion)) {
                 return true
             }
         }
+        Log.i(TAG, "[2A] poll timed out for $pkg")
         return false
     }
 
     private fun finishWithResult(pkg: String?, success: Boolean) {
-        if (!finished.compareAndSet(false, true)) return
+        if (!finished.compareAndSet(false, true)) {
+            Log.i(TAG, "[2A] finishWithResult skipped (already finishing)")
+            return
+        }
+        Log.i(TAG, "[2A] finishWithResult: pkg=$pkg success=$success")
         val data = Intent().apply {
             // Intent.EXTRA_INSTALL_RESULT is @hide; its stable value is
             // "android.intent.extra.INSTALL_RESULT".
@@ -171,6 +209,7 @@ class InstallProxyActivity : Activity() {
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "[2A] Proxy onDestroy (cleaning ${copiedFiles.size} staged file(s))")
         finished.set(true)
         pollThread?.interrupt()
         for (f in copiedFiles) runCatching { f.delete() }
