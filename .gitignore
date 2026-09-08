@@ -42,6 +42,9 @@ captures/
 .idea/copyright/profiles_settings.xml
 # Keep only shared, non-user IDE files out of VCS by default.
 
+# VS Code (editor/workspace settings are per-developer)
+.vscode/
+
 # Keystore files
 # Never commit signing material.
 *.jks
