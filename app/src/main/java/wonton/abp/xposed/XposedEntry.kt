@@ -9,6 +9,8 @@ import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.File
 import androidx.annotation.RequiresApi
@@ -17,6 +19,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
 import wonton.abp.common.Prefs
+import wonton.abp.install.ApkStageProvider
 
 /**
  * Xposed module entry point (libxposed API 102).
@@ -873,23 +876,31 @@ class XposedEntry : XposedModule() {
     }
 
     /**
-     * Copies a staged APK into our app's cache (`cache/apks/`) so the
-     * FileProvider can serve it to the installer via a content:// URI. The
-     * cache dir is made world-accessible by the app at startup.
+     * Stages a copy of the intercepted APK into our app's cache so the
+     * FileProvider can serve it to the installer via a content:// URI.
+     *
+     * system_server cannot write into the app's private data dir itself (SELinux
+     * denies `system_server -> app_data_file` writes; making the dir world
+     * writable only fixes the DAC layer), and a file descriptor cannot be handed
+     * over through an Intent (ActivityStarter rejects intents carrying FDs). So
+     * the descriptor is sent through the app's [ApkStageProvider] over Binder and
+     * the app's own process performs the copy.
      */
     private fun copyApkForInstaller(ctx: Context, src: File, sid: Int): File? = try {
-        val dataDir = runCatching {
-            ctx.packageManager.getApplicationInfo(OWN_PACKAGE, 0).dataDir
-        }.getOrNull() ?: return null
-        val apksDir = File(dataDir, "cache/apks")
-        apksDir.mkdirs()
-        apksDir.setReadable(true, false)
-        apksDir.setExecutable(true, false)
-        apksDir.setWritable(true, false)
-        val out = File(apksDir, "session-$sid.apk")
-        src.inputStream().use { input -> out.outputStream().use { o -> input.copyTo(o) } }
-        out.setReadable(true, false)
-        out
+        val pfd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)
+        val result = try {
+            val args = Bundle().apply {
+                putParcelable(ApkStageProvider.KEY_PFD, pfd)
+                putInt(ApkStageProvider.KEY_SESSION_ID, sid)
+            }
+            ctx.contentResolver.call(STAGE_URI, ApkStageProvider.METHOD_STAGE_APK, null, args)
+        } finally {
+            pfd.close()
+        }
+        val ok = result?.getBoolean(ApkStageProvider.KEY_OK) == true
+        val path = result?.getString(ApkStageProvider.KEY_PATH)
+        log(Log.INFO, TAG, "[B] stageApk -> ok=$ok path=$path")
+        if (ok && path != null) File(path) else null
     } catch (t: Throwable) {
         log(Log.WARN, TAG, "copyApkForInstaller failed", t)
         null
@@ -996,6 +1007,7 @@ class XposedEntry : XposedModule() {
 
         private val PROXY_COMPONENT =
             ComponentName(OWN_PACKAGE, "wonton.abp.install.InstallProxyActivity")
+        private val STAGE_URI = Uri.parse("content://${ApkStageProvider.AUTHORITY}")
         private const val FILEPROVIDER_AUTHORITY = "wonton.abp.fileprovider"
         private const val EXTRA_ABP_INSTALLER = "wonton.abp.extra.INSTALLER"
         private const val EXTRA_ABP_CALLER = "wonton.abp.extra.CALLER"

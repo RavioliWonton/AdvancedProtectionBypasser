@@ -103,10 +103,9 @@ class InstallProxyActivity : Activity() {
             finishWithResult(pkg = null, success = false)
             return
         }
-        // The module (system_server) stages APKs into our cache; make sure the
-        // cache subtree is traversable/writable for it. This also persists.
-        ensureCacheAccessible()
-
+        // The module (system_server) hands the APK over through
+        // ApkStageProvider, so the cache only needs to be writable by this app
+        // itself - no cross-process directory access is involved.
         val apkUri = received.data
         val installer = received.getStringExtra(EXTRA_ABP_INSTALLER)
             ?: readInstallerFromPrefs()
@@ -168,23 +167,6 @@ class InstallProxyActivity : Activity() {
             Log.i(TAG, "[2A] wait finished: success=$success")
             finishWithResult(targetPkg, success)
         }
-    }
-
-    private fun ensureCacheAccessible() {
-        val ok = runCatching {
-            val apks = File(cacheDir, "apks")
-            apks.mkdirs()
-            dataDir?.setReadable(true, false)
-            dataDir?.setExecutable(true, false)
-            cacheDir.setReadable(true, false)
-            cacheDir.setExecutable(true, false)
-            cacheDir.setWritable(true, false)
-            apks.setReadable(true, false)
-            apks.setExecutable(true, false)
-            apks.setWritable(true, false)
-            apks.exists() && cacheDir.exists()
-        }.getOrDefault(false)
-        Log.i(TAG, "[2A] ensureCacheAccessible -> $ok (cache=${cacheDir.absolutePath})")
     }
 
     private fun readInstallerFromPrefs(): String = runCatching {

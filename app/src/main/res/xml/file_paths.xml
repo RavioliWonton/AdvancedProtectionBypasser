@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  FileProvider paths for InstallProxyActivity / the module's staged APKs.
-  The Xposed module (in system_server) copies a selected app's install session
-  APK into cache/apks/, and the installer receives it via a content:// URI.
+  FileProvider paths for InstallProxyActivity and for the APKs the module
+  stages. The module (system_server) sends the intercepted session APK through
+  ApkStageProvider, which copies it into cache/apks/; the installer then
+  receives it via a content:// URI.
 -->
 <paths>
     <cache-path name="apks" path="apks/" />

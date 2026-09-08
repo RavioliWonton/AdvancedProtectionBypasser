@@ -109,6 +109,20 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!--
+          Binder endpoint the module (system_server) uses to stage an intercepted
+          install-session APK into our cache. system_server cannot write into our
+          data dir itself (SELinux), and an Intent cannot carry the file
+          descriptor (ActivityStarter rejects intents with FDs), so the module
+          sends the descriptor through ContentProvider.call() instead. call()
+          rejects any caller that is not the system uid.
+        -->
+        <provider
+            android:name=".install.ApkStageProvider"
+            android:authorities="wonton.abp.stage"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
     </application>
 
 </manifest>
