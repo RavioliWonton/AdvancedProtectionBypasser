@@ -21,7 +21,8 @@
     <string name="installer_dialog_title">預設安裝器</string>
     <string name="installer_dialog_hint">安裝器套件名稱</string>
     <string name="installer_dialog_desc">被選取應用程式的 ACTION_INSTALL_PACKAGE 意圖會被附加 setPackage(此套件名稱)。</string>
-    <string name="default_installer">moe.shizuku.installer</string>
+    <string name="installer_dialog_not_installed">您輸入的套件名稱本機未安裝</string>
+    <string name="default_installer">io.github.vvb2060.packageinstaller</string>
 
     <!-- Advanced settings -->
     <string name="settings_advanced_title">進階設定</string>
@@ -46,8 +47,7 @@
     <string name="cancel">取消</string>
     <string name="close">關閉</string>
     <string name="reset">重設</string>
-    <string name="badge_install_perm">安裝權限</string>
-    <string name="badge_system">系統</string>
+    <string name="badge_install_perm">安裝權限</string>    <string name="badge_market_app">應用商店應用</string>    <string name="badge_system">系統</string>
     <string name="loading">正在載入已安裝的應用程式…</string>
 
     <!-- Module state -->
@@ -66,7 +66,9 @@
     <string name="status_module_inactive">啟用失敗</string>
     <string name="status_report_logs">模組未連接到 Xposed 框架。請在 LSPosed 管理器中啟用本模組、勾選作用域並重新開機。如果仍然失敗，請在 LSPosed 管理器中打包日誌並回報問題。</string>
     <string name="status_framework">框架</string>
-    <string name="status_hook_count">已注入行程數</string>
-    <string name="status_hook_count_unavailable">不可用</string>
-    <string name="status_selected_apps">已選應用程式</string>
+    <string name="status_selected_apps">已選擇應用程式</string>
+    <string name="status_advanced_protection">進階保護</string>
+    <string name="status_advanced_protection_on">已啟用</string>
+    <string name="status_advanced_protection_off">未啟用</string>
+    <string name="status_advanced_protection_relaxed">未啟用（可能已被本模組放開）</string>
 </resources>

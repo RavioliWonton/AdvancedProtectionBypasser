@@ -15,7 +15,7 @@ object Prefs {
     const val KEY_INSTALLER = "installer_package"
 
     /** Default installer package. */
-    const val DEFAULT_INSTALLER = "moe.shizuku.installer"
+    const val DEFAULT_INSTALLER = "io.github.vvb2060.packageinstaller"
 
     /**
      * Boolean (default false): whether to relax the Enhanced Confirmation Mode

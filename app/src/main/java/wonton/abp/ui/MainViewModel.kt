@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import wonton.abp.App
+import wonton.abp.common.AdvancedProtection
 import wonton.abp.common.Gms
 import wonton.abp.common.Prefs
 import wonton.abp.data.AppInfo
@@ -42,11 +43,15 @@ data class UiState(
     val frameworkName: String? = null,
     /** Bound framework version, or null when the module is inactive. */
     val frameworkVersion: String? = null,
+    /** Framework internal version code (e.g. LSPosed build number), or null. */
+    val frameworkVersionCode: Long? = null,
+    /** Whether Advanced Protection's sideloading restriction is present. */
+    val advancedProtectionEnabled: Boolean = false,
     /**
-     * Number of processes currently hooked by this module, or null when the
-     * framework does not expose it. Acts as a live "hook count".
+     * True when the restriction reads as absent while this module's own
+     * unknown-sources relaxation is active, so the real state is unknown.
      */
-    val hookedTargetCount: Int? = null,
+    val advancedProtectionRelaxed: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -81,16 +86,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Reads module state, selection and installer live from the store. */
     private fun refreshFromStore() {
         val store = currentStore()
+        val selected = store.getSelectedPackages()
+        val bypassUserRestriction = store.getBypassUserRestriction()
+        val advancedProtection = AdvancedProtection.isRestrictionPresent(getApplication())
         _state.value = _state.value.copy(
             moduleActive = store.isAvailable,
-            selected = store.getSelectedPackages(),
+            selected = selected,
             installerPackage = store.getInstallerPackage(),
             bypassEcm = store.getBypassEcm(),
-            bypassUserRestriction = store.getBypassUserRestriction(),
+            bypassUserRestriction = bypassUserRestriction,
             hijackExplicit = store.getHijackExplicit(),
             frameworkName = store.getFrameworkName(),
             frameworkVersion = store.getFrameworkVersion(),
-            hookedTargetCount = store.getHookedTargetCount(),
+            frameworkVersionCode = store.getFrameworkVersionCode(),
+            advancedProtectionEnabled = advancedProtection,
+            // Our own relaxation makes the restriction read as absent user-wide,
+            // so a false reading may not be the real state.
+            advancedProtectionRelaxed =
+                !advancedProtection && bypassUserRestriction && selected.isNotEmpty(),
         )
     }
 

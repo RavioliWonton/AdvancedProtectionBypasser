@@ -28,11 +28,11 @@ class ConfigStore(private val service: XposedService?) {
         runCatching { service?.frameworkVersion }.getOrNull()
 
     /**
-     * Number of processes currently hooked by this module (a live "hook count").
-     * Requires framework service API 102; returns null when unsupported/unavailable.
+     * The bound framework's internal version code (e.g. LSPosed's build number),
+     * or null when unavailable.
      */
-    fun getHookedTargetCount(): Int? =
-        runCatching { service?.runningTargets?.size }.getOrNull()
+    fun getFrameworkVersionCode(): Long? =
+        runCatching { service?.frameworkVersionCode }.getOrNull()
 
     fun getSelectedPackages(): Set<String> =
         prefs?.getStringSet(Prefs.KEY_SELECTED, emptySet())?.toSet() ?: emptySet()

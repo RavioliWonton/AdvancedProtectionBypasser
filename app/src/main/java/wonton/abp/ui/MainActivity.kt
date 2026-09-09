@@ -513,26 +513,38 @@ private fun StatusDetailCard(state: UiState) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
+            // Framework name + version + internal version code
+            // (e.g. "LSPosed 2.2.0 (7021)").
             state.frameworkName?.let { name ->
                 val version = state.frameworkVersion
+                val code = state.frameworkVersionCode
+                val value = buildString {
+                    append(name)
+                    if (!version.isNullOrEmpty()) append(' ').append(version)
+                    if (code != null) append(" (").append(code).append(')')
+                }
                 StatusRow(
                     label = stringResource(R.string.status_framework),
-                    value = if (version.isNullOrEmpty()) name else "$name ($version)",
+                    value = value,
                 )
                 Spacer(Modifier.height(12.dp))
             }
-            // Live "hook count": number of processes currently hooked by the
-            // module, when the framework exposes it.
-            val count = state.hookedTargetCount
-            StatusRow(
-                label = stringResource(R.string.status_hook_count),
-                value = if (count != null) count.toString()
-                else stringResource(R.string.status_hook_count_unavailable),
-            )
-            Spacer(Modifier.height(12.dp))
             StatusRow(
                 label = stringResource(R.string.status_selected_apps),
                 value = state.selected.size.toString(),
+            )
+            Spacer(Modifier.height(12.dp))
+            StatusRow(
+                label = stringResource(R.string.status_advanced_protection),
+                value = when {
+                    state.advancedProtectionEnabled ->
+                        stringResource(R.string.status_advanced_protection_on)
+
+                    state.advancedProtectionRelaxed ->
+                        stringResource(R.string.status_advanced_protection_relaxed)
+
+                    else -> stringResource(R.string.status_advanced_protection_off)
+                },
             )
         }
     }
@@ -621,7 +633,7 @@ private fun AppRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (app.requestsInstallPermission || app.isSystem) {
+            if (app.requestsInstallPermission || app.isSystem || app.isMarketApp) {
                 Spacer(Modifier.height(4.dp))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -632,6 +644,13 @@ private fun AppRow(
                             text = stringResource(R.string.badge_install_perm),
                             container = MaterialTheme.colorScheme.primaryContainer,
                             content = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                    if (app.isMarketApp) {
+                        TagChip(
+                            text = stringResource(R.string.badge_market_app),
+                            container = MaterialTheme.colorScheme.tertiaryContainer,
+                            content = MaterialTheme.colorScheme.onTertiaryContainer,
                         )
                     }
                     if (app.isSystem) {
@@ -713,6 +732,7 @@ private val sampleApps = listOf(
         icon = null,
         requestsInstallPermission = true,
         isSystem = true,
+        isMarketApp = true,
     ),
     AppInfo(
         packageName = "com.example.browser",
@@ -720,6 +740,7 @@ private val sampleApps = listOf(
         icon = null,
         requestsInstallPermission = true,
         isSystem = false,
+        isMarketApp = false,
     ),
     AppInfo(
         packageName = "com.example.notes",
@@ -727,6 +748,7 @@ private val sampleApps = listOf(
         icon = null,
         requestsInstallPermission = false,
         isSystem = false,
+        isMarketApp = false,
     ),
 )
 

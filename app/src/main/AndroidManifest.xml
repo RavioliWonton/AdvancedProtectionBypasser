@@ -10,6 +10,17 @@
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
+    <!--
+      Signature-protected permission guarding the module's log receiver in
+      system_server: only builds signed with this app's key (i.e. this app) can
+      forward log lines to it.
+    -->
+    <permission
+        android:name="wonton.abp.permission.INTERNAL"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="wonton.abp.permission.INTERNAL" />
+
     <application
         android:name=".App"
         android:allowBackup="true"

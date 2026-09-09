@@ -15,6 +15,11 @@ licensee = "1.14.1"
 # play-services-base exposes GoogleApiAvailabilityLight, used to detect whether
 # Google Play services is installed before installing any hook.
 playServicesBase = "18.10.1"
+# Baseline/Startup profile generation toolchain.
+benchmark = "1.5.0"
+baselineProfile = "1.5.0"
+junitExt = "1.3.0"
+uiautomator = "2.4.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -37,6 +42,11 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 # Google Play services presence check.
 play-services-base = { group = "com.google.android.gms", name = "play-services-base", version.ref = "playServicesBase" }
 
+# Baseline Profile generation (the :baselineprofile com.android.test module).
+androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "benchmark" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitExt" }
+androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiautomator" }
+
 # libxposed
 libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "libxposed" }
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "libxposed" }
@@ -47,3 +57,7 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 # Validates the licenses of the dependency graph.
 licensee = { id = "app.cash.licensee", version.ref = "licensee" }
+# Test-only module that generates the Baseline/Startup profiles.
+android-test = { id = "com.android.test", version.ref = "agp" }
+# Generates Baseline/Startup profiles and wires the generation tasks.
+androidx-baselineprofile = { id = "androidx.baselineprofile", version.ref = "baselineProfile" }

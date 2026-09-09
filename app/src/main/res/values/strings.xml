@@ -21,7 +21,8 @@
     <string name="installer_dialog_title">Default installer</string>
     <string name="installer_dialog_hint">Installer package name</string>
     <string name="installer_dialog_desc">The ACTION_INSTALL_PACKAGE intent of selected apps will have setPackage(this package) appended.</string>
-    <string name="default_installer">moe.shizuku.installer</string>
+    <string name="installer_dialog_not_installed">This package is not installed on this device.</string>
+    <string name="default_installer">io.github.vvb2060.packageinstaller</string>
 
     <!-- Advanced settings -->
     <string name="settings_advanced_title">Advanced settings</string>
@@ -47,6 +48,7 @@
     <string name="close">Close</string>
     <string name="reset">Reset</string>
     <string name="badge_install_perm">Install permission</string>
+    <string name="badge_market_app">App store app</string>
     <string name="badge_system">System</string>
     <string name="loading">Loading installed apps…</string>
 
@@ -66,7 +68,9 @@
     <string name="status_module_inactive">Activation failed</string>
     <string name="status_report_logs">The module is not connected to the Xposed framework. Enable it in the LSPosed manager, select its scope and reboot. If it still fails, please package the logs from the LSPosed manager and report the issue.</string>
     <string name="status_framework">Framework</string>
-    <string name="status_hook_count">Hooked processes</string>
-    <string name="status_hook_count_unavailable">Not available</string>
     <string name="status_selected_apps">Selected apps</string>
+    <string name="status_advanced_protection">Advanced Protection</string>
+    <string name="status_advanced_protection_on">Enabled</string>
+    <string name="status_advanced_protection_off">Disabled</string>
+    <string name="status_advanced_protection_relaxed">Disabled (possibly relaxed by this module)</string>
 </resources>

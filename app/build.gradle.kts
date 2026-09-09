@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     // Fails the build if a dependency uses a license not on the allow-list.
     alias(libs.plugins.licensee)
+    // Generates the Baseline/Startup profiles (see :baselineprofile).
+    alias(libs.plugins.androidx.baselineprofile)
 }
 
 android {
@@ -21,8 +23,8 @@ android {
         applicationId = "wonton.abp"
         minSdk = 26
         targetSdk = 37
-        versionCode = 12
-        versionName = "2.0.1"
+        versionCode = 13
+        versionName = "2.1.0"
     }
 
     signingConfigs {
@@ -116,4 +118,13 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
 
     debugImplementation(libs.androidx.ui.tooling)
+
+    // Test-only: the profile generator module. Not part of the runtime graph.
+    baselineProfile(project(":baselineprofile"))
+}
+
+// Keep the generated profiles in the source tree so they can be committed and
+// inspected (app/src/release/generated/baselineProfiles/).
+baselineProfile {
+    saveInSrc = true
 }

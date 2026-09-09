@@ -2,6 +2,10 @@ name: Release
 
 # Build a signed release APK whenever a version tag is pushed (e.g. v1.0.0),
 # then attach it to a GitHub Release. Can also be triggered manually.
+#
+# The APK is built with a freshly generated Baseline/Startup profile: the
+# profile generator runs on a Gradle Managed Device before assembleRelease, so
+# every release ships a profile matching that exact build.
 on:
   push:
     tags:
@@ -37,6 +41,8 @@ jobs:
   build:
     needs: authorize
     runs-on: ubuntu-latest
+    # Generous: the profile generation boots an emulator.
+    timeout-minutes: 120
     permissions:
       contents: write # needed to create the GitHub Release and upload assets
     # The signing secrets live ONLY in this protected environment. GitHub pauses
@@ -67,7 +73,61 @@ jobs:
       - name: Validate dependency licenses
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:licenseeRelease --no-configuration-cache
+          # Task name is variant-qualified because the baseline profile plugin
+          # adds benchmarkRelease/nonMinifiedRelease variants.
+          ./gradlew :app:licenseeAndroidRelease --no-configuration-cache
+
+      # Gradle Managed Devices need KVM; the GitHub-hosted Linux runners expose
+      # it once these udev rules are installed.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Use the newest google-atd system image whose API level does not exceed
+      # the app's compileSdk, and point the managed device at it.
+      - name: Resolve newest google-atd image
+        id: atd
+        run: |
+          set -euo pipefail
+          COMPILE_SDK=$(grep -oE '^ *compileSdk = [0-9]+' app/build.gradle.kts | grep -oE '[0-9]+' | head -n1)
+          SDKMANAGER="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          API=$("$SDKMANAGER" --list 2>/dev/null \
+            | grep -oE 'system-images[/;]android-[0-9]+[/;]google_atd[/;]x86_64' \
+            | grep -oE 'android-[0-9]+' | grep -oE '[0-9]+' \
+            | sort -n | uniq | awk -v cap="$COMPILE_SDK" '$1 <= cap' | tail -n1)
+          if [ -z "$API" ]; then
+            echo "::error::No google-atd x86_64 system image found with API level <= $COMPILE_SDK"
+            exit 1
+          fi
+          echo "compileSdk=$COMPILE_SDK -> google-atd apiLevel=$API"
+          sed -i "s/apiLevel = [0-9]\+/apiLevel = $API/" baselineprofile/build.gradle.kts
+          grep -n "apiLevel" baselineprofile/build.gradle.kts
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+
+      # Runs before assembleRelease so the profile is packaged into the APK.
+      - name: Generate Baseline and Startup profiles
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew :app:generateBaselineProfile \
+            -Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.enabledRules=BaselineProfile \
+            --no-configuration-cache
+
+      - name: Upload generated profiles
+        uses: actions/upload-artifact@v7
+        with:
+          name: baseline-profiles
+          if-no-files-found: warn
+          path: |
+            app/src/**/generated/baselineProfiles/*.txt
+            app/build/outputs/**/*baseline-prof*.txt
+            app/build/outputs/**/*startup-prof*.txt
 
       - name: Build signed release APK
         env:

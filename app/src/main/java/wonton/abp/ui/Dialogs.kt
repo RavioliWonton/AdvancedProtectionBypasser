@@ -1,5 +1,6 @@
 package wonton.abp.ui
 
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,7 +24,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -34,6 +37,13 @@ import wonton.abp.R
 
 /** Success green used for the "enabled" status suffix. */
 private val StatusEnabledColor = Color(0xFF2E7D32)
+
+/**
+ * Whether [pkg] is installed. An empty value is treated as "fine" because
+ * confirming with an empty field is ignored by the view model anyway.
+ */
+private fun isPackageInstalled(context: Context, pkg: String): Boolean =
+    pkg.isBlank() || runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess
 
 /**
  * Combined settings dialog: the default installer package on top, followed by
@@ -58,6 +68,10 @@ fun SettingsDialog(
     onDismiss: () -> Unit,
 ) {
     var text by rememberSaveable { mutableStateOf(initialInstaller) }
+    // Set when the field loses focus with a package name that is not installed.
+    // It only warns; confirming still saves the value.
+    var notInstalled by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
     val default = stringResource(R.string.default_installer)
 
     AlertDialog(
@@ -80,9 +94,27 @@ fun SettingsDialog(
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { text = it },
+                    onValueChange = {
+                        text = it
+                        notInstalled = false
+                    },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    isError = notInstalled,
+                    supportingText = if (notInstalled) {
+                        {
+                            Text(
+                                text = stringResource(R.string.installer_dialog_not_installed),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    } else null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focusState ->
+                            if (!focusState.isFocused) {
+                                notInstalled = !isPackageInstalled(context, text.trim())
+                            }
+                        },
                     label = { Text(stringResource(R.string.installer_dialog_hint)) },
                 )
 

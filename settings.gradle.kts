@@ -24,3 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Advanced Protection Bypasser"
 include(":app")
+// com.android.test module that generates the Baseline/Startup profiles.
+include(":baselineprofile")

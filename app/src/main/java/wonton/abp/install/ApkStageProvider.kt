@@ -44,28 +44,43 @@ class ApkStageProvider : ContentProvider() {
         val caller = Binder.getCallingUid()
         if (caller != Process.SYSTEM_UID) {
             Log.w(TAG, "stageApk denied for uid $caller")
-            return null
+            return result(false, "denied for uid $caller")
         }
         @Suppress("DEPRECATION")
-        val source = extras?.getParcelable<ParcelFileDescriptor>(KEY_PFD) ?: return null
+        val source = extras?.getParcelable<ParcelFileDescriptor>(KEY_PFD)
+            ?: return result(false, "no file descriptor in extras")
         val sid = extras.getInt(KEY_SESSION_ID, -1)
         val dir = File(requireNotNull(context).cacheDir, "apks")
         val out = File(dir, "session-$sid.apk")
-        val ok = runCatching {
+        val staged = runCatching {
             dir.mkdirs()
             ParcelFileDescriptor.AutoCloseInputStream(source).use { input ->
                 out.outputStream().use { target -> input.copyTo(target) }
             }
-            out.length() > 0
-        }.getOrElse {
-            Log.w(TAG, "stageApk failed for sid=$sid", it)
-            false
+            out.length()
         }
-        Log.i(TAG, "stageApk: sid=$sid ok=$ok bytes=${if (ok) out.length() else 0L} -> $out")
-        return Bundle().apply {
-            putBoolean(KEY_OK, ok)
+        val bytes = staged.getOrNull()
+        val ok = bytes != null && bytes > 0L
+        val message = if (ok) {
+            "staged $bytes bytes -> $out"
+        } else {
+            "copy failed: " + (
+                staged.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" }
+                    ?: "empty file"
+                )
+        }
+        Log.i(TAG, "stageApk: sid=$sid ok=$ok $message")
+        // The result Bundle doubles as the log channel: this provider runs in
+        // the app process, so its Log.* output never reaches the LSPosed log.
+        // The module logs [KEY_MESSAGE] through the Xposed logger instead.
+        return result(ok, message).apply {
             if (ok) putString(KEY_PATH, out.absolutePath)
         }
+    }
+
+    private fun result(ok: Boolean, message: String): Bundle = Bundle().apply {
+        putBoolean(KEY_OK, ok)
+        putString(KEY_MESSAGE, message)
     }
 
     override fun query(
@@ -100,5 +115,8 @@ class ApkStageProvider : ContentProvider() {
         const val KEY_SESSION_ID = "sessionId"
         const val KEY_OK = "ok"
         const val KEY_PATH = "path"
+
+        /** Human-readable outcome; the module logs this to the Xposed log. */
+        const val KEY_MESSAGE = "message"
     }
 }
