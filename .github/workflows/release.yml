@@ -117,10 +117,12 @@ jobs:
         run: |
           ./gradlew :app:generateBaselineProfile \
             -Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.enabledRules=BaselineProfile \
-            --no-configuration-cache
+            --no-configuration-cache \
+            --info
 
       - name: Upload generated profiles
         uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: baseline-profiles
           if-no-files-found: warn
@@ -128,6 +130,20 @@ jobs:
             app/src/**/generated/baselineProfiles/*.txt
             app/build/outputs/**/*baseline-prof*.txt
             app/build/outputs/**/*startup-prof*.txt
+
+      # Managed-device test failures only show up in these reports, never in the
+      # Gradle console, so always publish them.
+      - name: Upload profile generation reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: baseline-profile-reports
+          if-no-files-found: ignore
+          path: |
+            baselineprofile/build/reports/androidTests/**
+            baselineprofile/build/outputs/androidTest-results/**
+            baselineprofile/build/outputs/managed_device_android_test_additional_output/**
+            baselineprofile/build/outputs/logs/**
 
       - name: Build signed release APK
         env:

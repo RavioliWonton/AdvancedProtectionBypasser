@@ -39,6 +39,10 @@ android {
             device = "Pixel 6"
             apiLevel = 36
             systemImageSource = "google-atd"
+            // The ATD images are x86_64 only and do not support NDK translation;
+            // AGP defaults to x86_64 today but warns because AGP 10 will switch
+            // the default to arm64-v8a.
+            testedAbi = "x86_64"
         }
     }
 

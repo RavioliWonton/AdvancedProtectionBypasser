@@ -1,5 +1,7 @@
 package wonton.abp.baselineprofile
 
+import android.content.ComponentName
+import android.content.Intent
 import androidx.benchmark.macro.MacrobenchmarkScope
 import androidx.benchmark.macro.junit4.BaselineProfileRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -29,14 +31,14 @@ class BaselineProfileGenerator {
         packageName = PACKAGE_NAME,
         includeInStartupProfile = true,
     ) {
-        startActivityAndWait()
+        startActivityAndWait(mainActivityIntent())
         device.wait(Until.hasObject(By.pkg(PACKAGE_NAME).depth(0)), TIMEOUT_MS)
         device.waitForIdle()
     }
 
     @Test
     fun appListAndStatus() = rule.collect(packageName = PACKAGE_NAME) {
-        startActivityAndWait()
+        startActivityAndWait(mainActivityIntent())
         device.wait(Until.hasObject(By.pkg(PACKAGE_NAME).depth(0)), TIMEOUT_MS)
         device.waitForIdle()
 
@@ -53,6 +55,15 @@ class BaselineProfileGenerator {
         clickTab("Status", "状态")
         device.waitForIdle()
     }
+
+    /**
+     * MainActivity deliberately has no LAUNCHER category (the module hides its
+     * launcher icon), so `startActivityAndWait()` cannot resolve a launcher
+     * intent for the package - the component has to be named explicitly.
+     */
+    private fun mainActivityIntent(): Intent = Intent(Intent.ACTION_MAIN)
+        .setComponent(ComponentName(PACKAGE_NAME, "$PACKAGE_NAME.ui.MainActivity"))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     /**
      * Clicks the first bottom-navigation tab whose label matches, trying every
