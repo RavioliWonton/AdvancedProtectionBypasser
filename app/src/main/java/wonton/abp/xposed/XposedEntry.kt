@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import androidx.annotation.RequiresApi
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
@@ -22,13 +23,17 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.milliseconds
 import wonton.abp.common.ModuleLog
 import wonton.abp.common.Prefs
 import wonton.abp.install.ApkStageProvider
 import wonton.abp.install.InstallHandoff
+import wonton.abp.install.InstallProxyActivity
 
 /**
  * Xposed module entry point (libxposed API 102).
@@ -67,13 +72,22 @@ class XposedEntry : XposedModule() {
      */
     private val installScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** Whether the app->module channel is registered; see [ensureProxyLogReceiver]. */
+    @Volatile
+    private var proxyLogReceiverRegistered = false
+
+    /**
+     * Installs the app process is currently running for us, keyed by session id,
+     * so a reported result can be matched back to the session to answer.
+     */
+    private val pendingSessions = ConcurrentHashMap<Int, PendingSession>()
+
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         log(Log.INFO, TAG, "onModuleLoaded: ${param.processName}")
     }
 
     override fun onSystemServerStarting(param: SystemServerStartingParam) {
         log(Log.INFO, TAG, "=== onSystemServerStarting: ABP module active in system_server ===")
-        registerProxyLogReceiver()
         val cl = param.classLoader
         hookInstallPermission(cl)
         hookActivityStart(cl)
@@ -82,13 +96,20 @@ class XposedEntry : XposedModule() {
     }
 
     /**
-     * Receives log lines the app process forwards through [ModuleLog] and
-     * re-logs them with the Xposed logger: LSPosed only captures logs written
-     * from hooked processes, so the app's own logcat output never shows up
-     * there. The receiver is guarded by a signature-level permission, so only
-     * builds signed with our key can send to it.
+     * Registers the receiver that carries the app process's log lines and install
+     * results; see [ModuleLog].
+     *
+     * It is called on first use and not from [onSystemServerStarting], because at
+     * that point system_server is still inside `startBootstrapServices` and
+     * ActivityManagerService has not published its binder yet:
+     * `ContextImpl.registerReceiverInternal` then calls through a null
+     * `ActivityManager.getService()` and dies with a NullPointerException. An
+     * install always happens long after boot, so registering then is both safe and
+     * early enough.
      */
-    private fun registerProxyLogReceiver() {
+    @Synchronized
+    private fun ensureProxyLogReceiver() {
+        if (proxyLogReceiverRegistered) return
         val ctx = systemContext()
         if (ctx == null) {
             log(Log.WARN, TAG, "proxy log receiver not registered (no system context)")
@@ -100,14 +121,30 @@ class XposedEntry : XposedModule() {
         }.onFailure {
             log(Log.WARN, TAG, "proxy log receiver registration failed", it)
         }.onSuccess {
+            proxyLogReceiverRegistered = true
             log(Log.INFO, TAG, "proxy log receiver registered (${ModuleLog.ACTION})")
         }
     }
 
+    /**
+     * Relays what the app process reports: plain log lines, and the terminal event
+     * of an intercepted install session. The receiver is guarded by a
+     * signature-level permission, so only builds signed with our key can send here.
+     */
     private val proxyLogReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val line = intent?.getStringExtra(ModuleLog.EXTRA_LINE) ?: return
-            log(Log.INFO, TAG, "[2A] $line")
+            if (intent == null) return
+            val sid = intent.getIntExtra(ModuleLog.EXTRA_SESSION_ID, ModuleLog.NO_SESSION)
+            if (sid != ModuleLog.NO_SESSION && intent.hasExtra(ModuleLog.EXTRA_RESULT_OK)) {
+                completePendingSession(
+                    sid,
+                    intent.getBooleanExtra(ModuleLog.EXTRA_RESULT_OK, false),
+                    intent.getStringExtra(ModuleLog.EXTRA_RESULT_MESSAGE),
+                )
+                return
+            }
+            val line = intent.getStringExtra(ModuleLog.EXTRA_LINE) ?: return
+            log(Log.INFO, TAG, line)
         }
     }
 
@@ -676,10 +713,11 @@ class XposedEntry : XposedModule() {
             log(Log.INFO, TAG, "rewriteInstallIntent: skip (no data uri to install)")
             return
         }
+        ensureProxyLogReceiver()
         intent.component = PROXY_COMPONENT
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.putExtra(EXTRA_ABP_INSTALLER, installer)
-        intent.putExtra(EXTRA_ABP_CALLER, caller)
+        intent.putExtra(InstallProxyActivity.EXTRA_ABP_INSTALLER, installer)
+        intent.putExtra(InstallProxyActivity.EXTRA_ABP_CALLER, caller)
         log(
             Log.INFO, TAG,
             "rewriteInstallIntent: -> proxy ${PROXY_COMPONENT.className} " +
@@ -787,10 +825,20 @@ class XposedEntry : XposedModule() {
     }
 
     /**
-     * Replaces a selected app's session install with an ACTION_VIEW hand-off to
-     * the configured installer. The fast path runs on the Binder thread (read the
-     * staged APK path + receiver); the copy/launch/wait/report runs on a
-     * background coroutine so the commit Binder call returns immediately.
+     * Replaces a selected app's session install with a hand-off to the configured
+     * installer.
+     *
+     * The fast path runs on the Binder thread (read the staged APK path + the
+     * status receiver); the copy, the launch and the bookkeeping run on a
+     * background coroutine, because the commit Binder call has to return
+     * immediately.
+     *
+     * The install itself is performed by [InstallProxyActivity] in the app's own
+     * process, and the session is answered when that activity reports back. The
+     * installer is deliberately not started from here: the APK is served by the
+     * app's FileProvider, which is not exported, so only the app may hand its URIs
+     * out - a read grant attached to an intent we start never reaches the
+     * installer, which then only shows "there was a problem parsing the package".
      */
     private fun proxySessionInstall(
         session: Any,
@@ -811,6 +859,7 @@ class XposedEntry : XposedModule() {
             sendSessionStatus(session, statusReceiver, null, false, "no installer configured")
             return
         }
+        ensureProxyLogReceiver()
         val ctx = systemContext()
         val baseApk = sessionBaseApk(session)
         // Prefer the IntentSender handed to commit(); fall back to the session
@@ -838,37 +887,123 @@ class XposedEntry : XposedModule() {
             return
         }
 
+        rememberPendingSession(sid, session, receiver, pkg)
         installScope.launch {
-            // Route InstallHandoff's progress lines into the Xposed log.
-            val handoffLog: (String) -> Unit = { msg -> log(Log.INFO, TAG, "[B] $msg") }
             try {
                 val copied = withContext(Dispatchers.IO) { copyApkForInstaller(ctx, baseApk, sid) }
-                log(Log.INFO, TAG, "[B] copyApkForInstaller -> $copied")
                 if (copied == null) {
+                    forgetPendingSession(sid)
                     sendSessionStatus(session, receiver, pkg, false, "failed to stage apk")
-                    return@launch
-                }
-                val launched =
-                    InstallHandoff.launchInstaller(ctx, copied, targetInstaller, handoffLog)
-                log(Log.INFO, TAG, "[B] launchInstaller($targetInstaller) -> $launched")
-                if (!launched) {
-                    sendSessionStatus(session, receiver, pkg, false, "installer $targetInstaller unavailable")
                     return@launch
                 }
                 // Release the original staged session; our copy is independent.
                 sessionAbandon(session)
-                log(Log.INFO, TAG, "[B] session abandoned; waiting pkg=$pkg targetVersion=$version")
-                val success = InstallHandoff.awaitInstalled(ctx, pkg, version, handoffLog)
-                log(Log.INFO, TAG, "[B] wait result: $success")
-                sendSessionStatus(
-                    session, receiver, pkg, success,
-                    if (success) "Success" else "Install failed or timed out"
+                if (!launchProxy(ctx, copied, targetInstaller, sid, sessionInstaller)) {
+                    forgetPendingSession(sid)
+                    sendSessionStatus(
+                        session, receiver, pkg, false,
+                        "could not start the install proxy"
+                    )
+                    return@launch
+                }
+                log(
+                    Log.INFO, TAG,
+                    "[B] session $sid handed to the proxy; it reports the result once the " +
+                        "installer is done (pkg=$pkg version=$version)"
                 )
             } catch (t: Throwable) {
+                forgetPendingSession(sid)
                 log(Log.WARN, TAG, "[B] proxySessionInstall failed", t)
                 sendSessionStatus(session, receiver, pkg, false, "internal error")
             }
         }
+    }
+
+    /**
+     * Starts [InstallProxyActivity] to run the install for [apk] and report the
+     * outcome back through [ModuleLog].
+     */
+    private fun launchProxy(
+        ctx: Context,
+        apk: File,
+        installer: String,
+        sid: Int,
+        caller: String?,
+    ): Boolean = try {
+        val intent = Intent()
+            .setComponent(PROXY_COMPONENT)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(InstallProxyActivity.EXTRA_ABP_APK_PATH, apk.absolutePath)
+            .putExtra(InstallProxyActivity.EXTRA_ABP_INSTALLER, installer)
+            .putExtra(InstallProxyActivity.EXTRA_ABP_SESSION_ID, sid)
+            .putExtra(InstallProxyActivity.EXTRA_ABP_CALLER, caller)
+        ctx.startActivity(intent)
+        log(
+            Log.INFO, TAG,
+            "[B] launchProxy: apk=${apk.absolutePath} installer=$installer sid=$sid"
+        )
+        true
+    } catch (t: Throwable) {
+        log(Log.WARN, TAG, "[B] launchProxy failed", t)
+        false
+    }
+
+    /** A session whose outcome the app process is going to report. */
+    private class PendingSession(
+        val session: Any,
+        val receiver: IntentSender,
+        val pkg: String,
+        val watchdog: Job,
+    )
+
+    /**
+     * Remembers a session the app is now installing for us and arms a watchdog:
+     * if the app never reports back (its process was killed while the installer
+     * was open, the task was swiped away, ...) the waiting caller still gets a
+     * terminal status instead of hanging forever.
+     */
+    private fun rememberPendingSession(
+        sid: Int,
+        session: Any,
+        receiver: IntentSender,
+        pkg: String,
+    ) {
+        val watchdog = installScope.launch {
+            delay(SESSION_WATCHDOG_MS.milliseconds)
+            val stale = pendingSessions.remove(sid) ?: return@launch
+            log(
+                Log.WARN, TAG,
+                "[B] no result for session $sid within ${SESSION_WATCHDOG_MS}ms; failing it"
+            )
+            sendSessionStatus(
+                stale.session, stale.receiver, stale.pkg, false,
+                "the install did not report back"
+            )
+        }
+        pendingSessions[sid] = PendingSession(session, receiver, pkg, watchdog)
+    }
+
+    /** Drops a session we already answered; its watchdog must not fire later. */
+    private fun forgetPendingSession(sid: Int) {
+        pendingSessions.remove(sid)?.watchdog?.cancel()
+    }
+
+    /** Answers a session with the outcome the app process reported for it. */
+    private fun completePendingSession(sid: Int, success: Boolean, message: String?) {
+        val pending = pendingSessions.remove(sid)
+        if (pending == null) {
+            log(Log.INFO, TAG, "[proxy] session $sid finished after we stopped waiting for it")
+            return
+        }
+        pending.watchdog.cancel()
+        log(Log.INFO, TAG, "[proxy] session $sid finished: success=$success msg=$message")
+        sendSessionStatus(
+            pending.session,
+            pending.receiver,
+            pending.pkg,
+            success,
+            message ?: if (success) "Success" else "Install failed",
+        )
     }
 
     private fun sessionInstallerPackage(session: Any): String? {
@@ -942,6 +1077,9 @@ class XposedEntry : XposedModule() {
             val args = Bundle().apply {
                 putParcelable(ApkStageProvider.KEY_PFD, pfd)
                 putInt(ApkStageProvider.KEY_SESSION_ID, sid)
+                // Lets the app notice a short copy instead of handing a truncated
+                // APK to the installer.
+                putLong(ApkStageProvider.KEY_EXPECTED_BYTES, pfd.statSize)
             }
             ctx.contentResolver.call(STAGE_URI, ApkStageProvider.METHOD_STAGE_APK, null, args)
         } finally {
@@ -1017,11 +1155,17 @@ class XposedEntry : XposedModule() {
         private const val TAG = "ABP"
         private const val OWN_PACKAGE = "wonton.abp"
 
+        /**
+         * How long to wait for the app process to report the result of an
+         * intercepted install before failing it. The app itself waits
+         * [InstallHandoff.POLL_TIMEOUT_MS] for the package, so this only covers a
+         * proxy that never reports back at all (killed process, ...).
+         */
+        private const val SESSION_WATCHDOG_MS = InstallHandoff.POLL_TIMEOUT_MS + 60_000L
+
         private val PROXY_COMPONENT =
             ComponentName(OWN_PACKAGE, "wonton.abp.install.InstallProxyActivity")
         private val STAGE_URI = Uri.parse("content://${ApkStageProvider.AUTHORITY}")
-        private const val EXTRA_ABP_INSTALLER = "wonton.abp.extra.INSTALLER"
-        private const val EXTRA_ABP_CALLER = "wonton.abp.extra.CALLER"
         // PackageInstaller.EXTRA_LEGACY_STATUS (@hide): stable string value.
         private const val EXTRA_LEGACY_STATUS = "android.content.pm.extra.LEGACY_STATUS"
 

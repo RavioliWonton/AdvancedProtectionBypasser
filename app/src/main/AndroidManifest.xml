@@ -109,10 +109,12 @@
 
         <!--
           Serves the APKs the module stages (into cache/apks/) to the configured
-          installer through a content:// URI + FLAG_GRANT_READ_URI_PERMISSION.
+          installer through a content:// URI + read grant. ApkFileProvider is
+          FileProvider plus a real descriptor length, which is what the installer
+          reads while parsing and staging the APK.
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".install.ApkFileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
