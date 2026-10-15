@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Advanced Protection Bypasser</string>
+    <string name="app_name">Install Restriction Bypasser</string>
 
     <!-- Overflow menu -->
     <string name="menu_settings">Settings</string>
@@ -39,13 +39,15 @@
     <string name="settings_bypass_user_restriction_desc">Lifts the system restriction that disables unknown-sources installs (used by Advanced Protection). This applies to the whole device, not a single app. Only enable if you understand the risk. Off by default.</string>
     <string name="settings_hijack_explicit_title">Hijack install intents with an explicit target</string>
     <string name="settings_hijack_explicit_desc">Also redirect install intents that already name a target activity or package (for example the system installer). Enable only if an app still shows the system confirmation dialog. Off by default.</string>
+    <string name="settings_dev_verification_title">Bypass developer verification</string>
+    <string name="settings_dev_verification_desc">Forces the developer-verification state to read as open, in the verifier app\'s own preferences and in the platform settings it reads. The switch shows the state actually in effect: it stays off while the module is inactive.</string>
 
     <!-- No Google Play services notice (informational only) -->
     <string name="no_gms_notice">Google Play services was not found. This app still works normally without it — please continue only if you know what you are doing.</string>
     <string name="no_gms_notice_dismiss">Dismiss notice</string>
 
     <!-- About dialog -->
-    <string name="about_message">Advanced Protection Bypasser\n\nAn open-source Xposed module + Jetpack Compose app.\n\nForce-grants install permission to selected apps and redirects their install intents to a configurable installer.\n\nLicensed under the GNU General Public License v3.0 (GPLv3). You are free to use, study, share and modify it under the terms of that license.</string>
+    <string name="about_message">Install Restriction Bypasser\n\nAn open-source Xposed module + Jetpack Compose app.\n\nForce-grants install permission to selected apps, redirects their install intents to a configurable installer, and lifts the developer-verification waiting period for unverified apps.\n\nLicensed under the GNU General Public License v3.0 (GPLv3). You are free to use, study, share and modify it under the terms of that license.</string>
 
     <!-- Common -->
     <string name="ok">OK</string>

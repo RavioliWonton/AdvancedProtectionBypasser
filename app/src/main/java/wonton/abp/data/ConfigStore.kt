@@ -52,6 +52,12 @@ class ConfigStore(private val service: XposedService?) {
         prefs?.getBoolean(Prefs.KEY_HIJACK_EXPLICIT, Prefs.DEFAULT_HIJACK_EXPLICIT)
             ?: Prefs.DEFAULT_HIJACK_EXPLICIT
 
+    fun getBypassDevVerification(): Boolean =
+        prefs?.getBoolean(
+            Prefs.KEY_BYPASS_DEV_VERIFICATION,
+            Prefs.DEFAULT_BYPASS_DEV_VERIFICATION,
+        ) ?: Prefs.DEFAULT_BYPASS_DEV_VERIFICATION
+
     fun setSelectedPackages(packages: Set<String>) {
         prefs?.edit()?.putStringSet(Prefs.KEY_SELECTED, packages)?.apply()
     }
@@ -70,5 +76,9 @@ class ConfigStore(private val service: XposedService?) {
 
     fun setHijackExplicit(enabled: Boolean) {
         prefs?.edit()?.putBoolean(Prefs.KEY_HIJACK_EXPLICIT, enabled)?.apply()
+    }
+
+    fun setBypassDevVerification(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(Prefs.KEY_BYPASS_DEV_VERIFICATION, enabled)?.apply()
     }
 }

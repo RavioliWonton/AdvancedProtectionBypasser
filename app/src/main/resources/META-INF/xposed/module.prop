@@ -1,7 +1,7 @@
 id=wonton.abp
-name=Advanced Protection Bypasser
+name=Install Restriction Bypasser
 author=wonton
-description=Force-grants install permission and redirects install intents for selected apps.
+description=Force-grants install permission, redirects install intents for selected apps, and forces the developer-verification state to read as open.
 minApiVersion=102
 targetApiVersion=102
 staticScope=true

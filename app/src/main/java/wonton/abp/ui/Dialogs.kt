@@ -52,8 +52,8 @@ private fun isPackageInstalled(context: Context, pkg: String): Boolean =
 
 /**
  * Combined settings dialog: the default installer package on top, followed by
- * an "advanced settings" section with two opt-in switches that control the
- * version-specific install-restriction bypasses (both default OFF).
+ * an "advanced settings" section with the opt-in switches that control the
+ * version-specific install-restriction bypasses (all default OFF).
  *
  * The installer package is committed on confirm; the switches are applied
  * immediately via [onBypassEcmChange] / [onBypassUserRestrictionChange] so their
@@ -65,10 +65,12 @@ fun SettingsDialog(
     bypassEcm: Boolean,
     bypassUserRestriction: Boolean,
     hijackExplicit: Boolean,
+    bypassDevVerification: Boolean,
     moduleActive: Boolean,
     onBypassEcmChange: (Boolean) -> Unit,
     onBypassUserRestrictionChange: (Boolean) -> Unit,
     onHijackExplicitChange: (Boolean) -> Unit,
+    onBypassDevVerificationChange: (Boolean) -> Unit,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -163,6 +165,14 @@ fun SettingsDialog(
                     checked = hijackExplicit,
                     moduleActive = moduleActive,
                     onCheckedChange = onHijackExplicitChange,
+                )
+                Spacer(Modifier.height(12.dp))
+                SwitchRow(
+                    title = stringResource(R.string.settings_dev_verification_title),
+                    desc = stringResource(R.string.settings_dev_verification_desc),
+                    checked = bypassDevVerification,
+                    moduleActive = moduleActive,
+                    onCheckedChange = onBypassDevVerificationChange,
                 )
             }
         },

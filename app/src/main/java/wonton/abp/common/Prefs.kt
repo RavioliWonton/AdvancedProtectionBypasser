@@ -45,4 +45,23 @@ object Prefs {
 
     /** Default for [KEY_HIJACK_EXPLICIT]. */
     const val DEFAULT_HIJACK_EXPLICIT = false
+
+    /**
+     * Boolean (default **false**): whether to force the developer-verification
+     * state to read as open.
+     *
+     * "Android developer verification" refuses apps whose signing key is not
+     * registered by a verified developer; the advanced flow is the escape hatch
+     * for power users. Reverse engineering both APKs involved found the *state*
+     * of that flow is the lever - there is no local timer to bend (see the
+     * developer-verification section in XposedEntry).
+     *
+     * Off by default, and the settings switch shows what is actually in effect:
+     * nothing is bypassed while the module is inactive, so the switch reads as
+     * off then.
+     */
+    const val KEY_BYPASS_DEV_VERIFICATION = "bypass_dev_verification"
+
+    /** Default for [KEY_BYPASS_DEV_VERIFICATION]. */
+    const val DEFAULT_BYPASS_DEV_VERIFICATION = false
 }

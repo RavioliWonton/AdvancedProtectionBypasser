@@ -282,10 +282,12 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
             bypassEcm = state.bypassEcm,
             bypassUserRestriction = state.bypassUserRestriction,
             hijackExplicit = state.hijackExplicit,
+            bypassDevVerification = state.bypassDevVerification,
             moduleActive = state.moduleActive,
             onBypassEcmChange = vm::setBypassEcm,
             onBypassUserRestrictionChange = vm::setBypassUserRestriction,
             onHijackExplicitChange = vm::setHijackExplicit,
+            onBypassDevVerificationChange = vm::setBypassDevVerification,
             onConfirm = {
                 vm.setInstallerPackage(it)
                 showSettingsDialog = false

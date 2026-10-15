@@ -117,6 +117,8 @@ class XposedEntry : XposedModule() {
             .onFailure { log(Log.ERROR, TAG, "hookActivityStart failed", it) }
         runCatching { hookPackageInstallerSession(cl) }
             .onFailure { log(Log.ERROR, TAG, "hookPackageInstallerSession failed", it) }
+        runCatching { hookDeveloperVerification(cl) }
+            .onFailure { log(Log.ERROR, TAG, "hookDeveloperVerification failed", it) }
     }
 
     /**
@@ -274,8 +276,14 @@ class XposedEntry : XposedModule() {
 
     @RequiresApi(Build.VERSION_CODES.Q)
     override fun onPackageLoaded(param: PackageLoadedParam) {
-        // Interception is centralized in system_server (see onSystemServerStarting).
-        // No per-app hooks are installed here.
+        // Install interception is centralized in system_server (see
+        // onSystemServerStarting). The one package this module has per-app work
+        // for is the developer verifier: its process owns the advanced flow, and
+        // the state that gates it is kept here.
+        if (param.packageName == DEV_VERIFIER_PACKAGE) {
+            log(Log.INFO, TAG, "=== onPackageLoaded: developer verifier process ===")
+            hookVerifierState(param.defaultClassLoader)
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -850,6 +858,261 @@ class XposedEntry : XposedModule() {
     }
 
     // ---------------------------------------------------------------------
+    // Hook 4: developer verification.
+    //
+    // Android developer verification makes certified devices refuse apps whose
+    // signing key is not registered by a verified developer. The advanced flow is
+    // the escape hatch for power users, and the *state* of that flow - not a
+    // timer - is what this hook bends.
+    //
+    // What reverse engineering the two APKs involved showed:
+    //  - Google Play services knows nothing about it. The stable build and the
+    //    26.41.30 beta were both scanned: their DEX files carry the verifier's
+    //    package name and nothing else about the feature - no policy, flow or
+    //    state name. The "unverified app" strings there belong to Google Sign-In
+    //    (VIEW_NAME_GIS_*_UNVERIFIED_APP_WARNING, DISPLAY_UNVERIFIED_APP_WARNING)
+    //    and the only verification API is Play Protect's
+    //    com.google.android.vending.verifier.*, served by the Play Store.
+    //  - The verifier app (com.google.android.verifier, see onPackageLoaded) owns
+    //    the flow: it holds the install claims (managed / private / restore / web
+    //    APK), the verification journey (assets/verification_journey_compiled
+    //    .binarypb), its phenotype flag metadata, and it reads
+    //    android.provider.Settings. It uses no AlarmManager anywhere, so the wait
+    //    is not a local countdown we could rewrite.
+    //  - Neither APK names the state: the verifier's logic is R8-obfuscated down
+    //    to its log strings, and the keys the state is filed under are as closed
+    //    as the app.
+    //
+    // So this works on *shape*, over both possible homes of the state:
+    //  - system_server, for the settings the verifier reads and writes
+    //    (Settings.Global/Secure and their shared NameValueTable ancestors);
+    //  - the verifier's own process, for what it keeps to itself
+    //    (SharedPreferencesImpl).
+    // Keys that talk about verification or the advanced flow are answered with the
+    // reading that means "not blocking": an enable-flavoured key becomes true/1, a
+    // block-flavoured one (required, blocked, pending, expired...) false/0. Only
+    // booleans and 0/1 are produced - no timestamp is rewritten, because the state
+    // is what the flow is gated on.
+    //
+    // Every key touched is logged, which is what turns this from a guess into a
+    // rule: the verifier's own writes name the key the state lives under. The
+    // hooks are installed unconditionally, and every read checks the app's switch
+    // (off by default) itself, so flipping it takes effect without a restart.
+    // ---------------------------------------------------------------------
+
+    private fun hookDeveloperVerification(cl: ClassLoader) {
+        val hooked = hookSettingsState(cl)
+        log(Log.INFO, TAG, "dev-verif: system settings hooks installed: $hooked")
+    }
+
+    /**
+     * Hooks the keyed getters of the platform settings classes so that
+     * [devVerificationSetting] answers them. Returns how many methods were hooked.
+     *
+     * It is called with two different class loaders, because a settings read can
+     * happen in two places and neither sees the other:
+     *  - in system_server, where framework code asks the settings directly;
+     *  - in the verifier's own process, where `Settings.Secure.getString(...)` is
+     *    answered from that app's `NameValueCache`, and on a miss by a Binder call
+     *    into `SettingsProvider.call` - which is NOT one of the `Settings$*` static
+     *    getters hooked here. A hook in system_server alone therefore sees nothing
+     *    of what the verifier reads for itself.
+     */
+    private fun hookSettingsState(cl: ClassLoader): Int {
+        var hooked = 0
+        for (name in SETTINGS_CLASSES) {
+            val clazz = runCatching { cl.loadClass(name) }.getOrNull()
+            if (clazz == null) {
+                log(Log.WARN, TAG, "dev-verif: $name not found")
+                continue
+            }
+            val label = name.substringAfterLast('.')
+            hooked += hookKeyedGetters(clazz, label) { key, original ->
+                devVerificationSetting(key, label, original)
+            }
+            // The accessors sit on the nested class in some versions and on the
+            // shared NameValueTable base in others, so both are covered.
+            clazz.superclass
+                ?.takeIf { it != Any::class.java }
+                ?.let { base ->
+                    hooked += hookKeyedGetters(base, "$label (base)") { key, original ->
+                        devVerificationSetting(key, label, original)
+                    }
+                }
+        }
+        return hooked
+    }
+
+    /**
+     * Hooks everything the verifier app reads its own state through.
+     *
+     * This runs in the verifier's process, and it covers both homes the state can
+     * have there: the platform settings it reads for itself (see
+     * [hookSettingsState] for why system_server cannot see those) and its own
+     * preferences.
+     *
+     * The hooks go in whether or not the switch is on, and each read checks the
+     * switch itself: the verifier runs for hours, so a switch flipped after it
+     * started has to take effect without restarting the process.
+     */
+    private fun hookVerifierState(cl: ClassLoader) {
+        var hooked = hookSettingsState(cl)
+        val clazz = runCatching { cl.loadClass("android.app.SharedPreferencesImpl") }.getOrNull()
+        if (clazz == null) {
+            log(Log.WARN, TAG, "dev-verif: SharedPreferencesImpl not found")
+            hookVerifierWrites(cl)
+            return
+        }
+        // Only the typed getters are hooked here: an app that reads a whole map at
+        // once (getAll) would slip past this, which is why the settings hooks above
+        // are installed as well.
+        hooked += hookKeyedGetters(clazz, "verifier prefs") { key, original ->
+            devVerificationSetting(key, "verifier prefs", original)
+        }
+        log(Log.INFO, TAG, "dev-verif: verifier hooks installed: $hooked")
+        hookVerifierWrites(cl)
+    }
+
+    /**
+     * Logs the writes of verification-ish preference keys.
+     *
+     * Writes are *logged*, not rewritten: the advanced flow's state is written once,
+     * when the user finishes it, and that log line is what identifies the key that
+     * carries it. That step cannot be read out of the APK: the app is R8-obfuscated
+     * (its managers exist only as log strings) and the flow is run together with
+     * Google's backend - device-invite payloads against the
+     * `androiddeveloperverifier-pa` endpoint.
+     */
+    private fun hookVerifierWrites(cl: ClassLoader) {
+        val clazz = runCatching { cl.loadClass("android.app.SharedPreferencesImpl\$EditorImpl") }
+            .getOrNull()
+        if (clazz == null) {
+            log(Log.WARN, TAG, "dev-verif: SharedPreferencesImpl\$EditorImpl not found")
+            return
+        }
+        var hooked = 0
+        for (m in clazz.declaredMethods) {
+            if (!m.name.startsWith("put")) continue
+            if (m.parameterTypes.size != 2) continue
+            if (m.parameterTypes[0] != String::class.java) continue
+            runCatching {
+                hook(m).intercept { chain ->
+                    val key = chain.getArg(0) as? String
+                    val result = chain.proceed()
+                    if (key != null && DEV_VERIFICATION_KEY.containsMatchIn(key)) {
+                        log(
+                            Log.INFO, TAG,
+                            "dev-verif[write]: ${m.name.removePrefix("put")} " +
+                                "$key = ${chain.getArg(1)}"
+                        )
+                    }
+                    result
+                }
+                hooked++
+            }.onFailure {
+                log(Log.WARN, TAG, "EditorImpl.${m.name} hook failed", it)
+            }
+        }
+        log(Log.INFO, TAG, "dev-verif: verifier write hooks installed: $hooked")
+    }
+
+    /**
+     * Hooks every `get*` accessor of [clazz] that takes a key `String` and lets
+     * [resolve] answer the read. Answers how many methods were hooked.
+     */
+    private fun hookKeyedGetters(
+        clazz: Class<*>,
+        label: String,
+        resolve: (String, Any?) -> Any?,
+    ): Int {
+        var hooked = 0
+        for (m in clazz.declaredMethods) {
+            if (!m.name.startsWith("get")) continue
+            // A keyed settings getter is at most (ContentResolver, String, int).
+            if (m.parameterTypes.size > 3) continue
+            val keyIndex = m.parameterTypes.indexOfFirst { it == String::class.java }
+            if (keyIndex < 0) continue
+            runCatching {
+                hook(m).intercept { chain ->
+                    val key = chain.getArg(keyIndex) as? String
+                    val original = chain.proceed()
+                    if (key == null) original else resolve(key, original)
+                }
+                hooked++
+                log(Log.INFO, TAG, "Hooked $label.${m.name}(${m.parameterTypes.size} args)")
+            }.onFailure {
+                log(Log.WARN, TAG, "$label.${m.name} hook failed", it)
+            }
+        }
+        return hooked
+    }
+
+    private fun devVerificationSetting(key: String, label: String, original: Any?): Any? {
+        if (!DEV_VERIFICATION_KEY.containsMatchIn(key)) return original
+        // The Verify-apps (Play Protect) verifier family -
+        // `package_verifier_enable`, `package_verifier_state`,
+        // `package_verifier_user_consent`, `package_verifier_timeout` - matches on
+        // "verifier" but means the OPPOSITE: there true/1 is what makes an install
+        // stricter. A shape rule cannot tell the two apart, and getting it wrong
+        // would switch install-time scanning ON, so these keys are left alone.
+        // (Their API surface is in GMS: com.google.android.vending.verifier
+        // .ACTION_PACKAGE_VERIFICATION_API / ACTION_CHECK_VERIFY_INSTALL, served by
+        // the Play Store. Turning that subsystem off is a different feature, and one
+        // that has to be asked for explicitly.)
+        if (VERIFIER_SUBSYSTEM_KEY.containsMatchIn(key)) {
+            log(Log.INFO, TAG, "dev-verif: $label $key = $original (verifier subsystem, untouched)")
+            return original
+        }
+        if (!isDevVerificationBypassEnabled()) {
+            log(Log.INFO, TAG, "dev-verif: $label $key = $original (switch off)")
+            return original
+        }
+        val replaced = devVerificationValue(key, original)
+        log(Log.INFO, TAG, "dev-verif: $label $key = $original -> $replaced")
+        return replaced
+    }
+
+    /**
+     * The reading a verification/advanced-flow key should give to mean "not
+     * blocking": an enable-flavoured key becomes true/1, a block-flavoured one
+     * false/0.
+     *
+     * Only booleans and 0/1 leave this function. A string that is not a boolean
+     * literal is passed through, and no time is rewritten: the state is what the
+     * flow is gated on, and answering a clock question with a made-up clock is a
+     * worse lie than the real one.
+     */
+    private fun devVerificationValue(key: String, original: Any?): Any? {
+        val open = !DEV_VERIFICATION_BLOCK_KEY.containsMatchIn(key)
+        return when (original) {
+            is Boolean -> open
+            is Int -> if (open) 1 else 0
+            is Long -> if (open) 1L else 0L
+            is String ->
+                if (original.equals("true", ignoreCase = true) ||
+                    original.equals("false", ignoreCase = true)
+                ) {
+                    open.toString()
+                } else {
+                    original
+                }
+
+            else -> original
+        }
+    }
+
+    private fun isDevVerificationBypassEnabled(): Boolean = try {
+        getRemotePreferences(Prefs.GROUP)
+            .getBoolean(Prefs.KEY_BYPASS_DEV_VERIFICATION, Prefs.DEFAULT_BYPASS_DEV_VERIFICATION)
+    } catch (t: Throwable) {
+        // Remote preferences are read-only here and may not be readable this
+        // early; the default is off, and the UI writes the switch long before any
+        // advanced flow can run.
+        log(Log.WARN, TAG, "dev-verif: preference read failed, assuming the default", t)
+        Prefs.DEFAULT_BYPASS_DEV_VERIFICATION
+    }
+
+    // ---------------------------------------------------------------------
     // Hook 3 (system_server): PackageInstaller.Session installs for a selected
     // app -> extract staged APK, ACTION_VIEW to the installer, poll, report.
     //
@@ -1328,6 +1591,51 @@ class XposedEntry : XposedModule() {
     companion object {
         private const val TAG = "ABP"
         private const val OWN_PACKAGE = "wonton.abp"
+
+        /** Google's developer verification service - the advanced flow's own app. */
+        private const val DEV_VERIFIER_PACKAGE = "com.google.android.verifier"
+
+        /** Settings classes whose keyed getters are hooked in system_server. */
+        private val SETTINGS_CLASSES = listOf(
+            "android.provider.Settings\$Global",
+            "android.provider.Settings\$Secure",
+            "android.provider.Settings\$System",
+        )
+
+        /**
+         * Keys that look like they belong to developer verification.
+         *
+         * The verifier app is R8-obfuscated: its classes and methods are renamed,
+         * so only the *strings* it uses survive - and those are what this matches.
+         * `verif` alone is in here on purpose: the app's own flags are named
+         * `CollectionBasisVerifierFeatures__*`, and whatever the state is called,
+         * it has to mention verification somewhere. `advanced_protection` is
+         * deliberately NOT matched by any alternative here: the module reads that
+         * flag to report Advanced Protection, and must not rewrite it.
+         */
+        private val DEV_VERIFICATION_KEY = Regex(
+            "(?i)(verif|enroll|invite|adv(anced)?[_ ]?flow|developer[_ ]?console)"
+        )
+
+        /**
+         * Keys whose reading means "blocked", i.e. the opposite polarity of an
+         * enable-flavoured key. A key that matches [DEV_VERIFICATION_KEY] and this
+         * is answered 0/false, every other one 1/true - which is how an unknown key
+         * gets an answer without guessing its meaning from the value.
+         */
+        private val DEV_VERIFICATION_BLOCK_KEY = Regex(
+            "(?i)(required|block\\w*|deny|denied|disallow\\w*|pending|wait\\w*|" +
+                "lock\\w*|expir\\w*|reject\\w*)"
+        )
+
+        /**
+         * Keys that belong to the Verify-apps / Play Protect verifier subsystem
+         * rather than to developer verification, and that therefore must not be
+         * answered by shape; see [devVerificationSetting].
+         */
+        private val VERIFIER_SUBSYSTEM_KEY = Regex(
+            "(?i)verifier[._a-z0-9]*(enable|state|consent|timeout|setting|scan)"
+        )
 
         /**
          * How long to wait for the app process to report the result of an

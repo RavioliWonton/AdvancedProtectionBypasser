@@ -22,7 +22,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Advanced Protection Bypasser"
+rootProject.name = "Install Restriction Bypasser"
 include(":app")
 // com.android.test module that generates the Baseline/Startup profiles.
 include(":baselineprofile")

@@ -36,6 +36,14 @@ data class UiState(
     /** Also hijack install intents that name an explicit target. Off by default. */
     val hijackExplicit: Boolean = Prefs.DEFAULT_HIJACK_EXPLICIT,
     /**
+     * Force the developer-verification state to read as open (advanced flow).
+     *
+     * What is shown is what is in effect: the stored value only reads as on while
+     * the module is active, because nothing is bypassed without it. Off by
+     * default.
+     */
+    val bypassDevVerification: Boolean = Prefs.DEFAULT_BYPASS_DEV_VERIFICATION,
+    /**
      * Whether Google Play services is installed. When it is not, the status page
      * shows a dismissible informational notice; nothing is gated on it.
      */
@@ -114,6 +122,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             bypassEcm = store.getBypassEcm(),
             bypassUserRestriction = bypassUserRestriction,
             hijackExplicit = store.getHijackExplicit(),
+            // Reported as in effect only while the module can act on it.
+            bypassDevVerification = store.getBypassDevVerification() && store.isAvailable,
             frameworkName = store.getFrameworkName(),
             frameworkVersion = store.getFrameworkVersion(),
             frameworkVersionCode = store.getFrameworkVersionCode(),
@@ -188,6 +198,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val store = currentStore()
         store.setHijackExplicit(enabled)
         _state.value = _state.value.copy(hijackExplicit = store.getHijackExplicit())
+    }
+
+    /**
+     * Stores the developer-verification bypass.
+     *
+     * With no module bound there is nothing to bypass, so the switch is left
+     * where it was and the UI re-reads the state instead of showing a value that
+     * would not be in effect (see [UiState.bypassDevVerification]).
+     */
+    fun setBypassDevVerification(enabled: Boolean) {
+        val store = currentStore()
+        if (!store.isAvailable) {
+            refreshFromStore()
+            return
+        }
+        store.setBypassDevVerification(enabled)
+        refreshFromStore()
     }
 
     /**

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Advanced Protection Bypasser</string>
+    <string name="app_name">Install Restriction Bypasser</string>
 
     <!-- Overflow menu -->
     <string name="menu_settings">設定</string>
@@ -39,13 +39,15 @@
     <string name="settings_bypass_user_restriction_desc">解除系統停用未知來源安裝的限制（進階保護會啟用它）。此項對整個裝置生效，而非單一應用程式。請在了解風險後再開啟。預設關閉。</string>
     <string name="settings_hijack_explicit_title">劫持已指定目標的安裝意圖</string>
     <string name="settings_hijack_explicit_desc">連已經指定了目標 Activity 或套件名稱（例如系統安裝器）的安裝意圖也一併重新導向。僅當某些應用程式仍彈出系統確認對話框時再開啟。預設關閉。</string>
+    <string name="settings_dev_verification_title">繞過開發者驗證</string>
+    <string name="settings_dev_verification_desc">Hook 開發者驗證的狀態，讓它在驗證器應用程式自身的偏好設定、以及它讀取的平台設定中讀作「已放開」。開關顯示實際生效狀態：模組未啟用時保持關閉。</string>
 
     <!-- No Google Play services notice (informational only) -->
     <string name="no_gms_notice">未偵測到 Google 服務。在沒有 Google 服務的情況下，本 App 仍會照正常功能運作——請確認你知道自己在做什麼後再繼續使用。</string>
     <string name="no_gms_notice_dismiss">關閉提示</string>
 
     <!-- About dialog -->
-    <string name="about_message">Advanced Protection Bypasser\n\n一個開源的 Xposed 模組 + Jetpack Compose 應用程式。\n\n為選取的應用程式強制授予安裝權限，並將其安裝意圖重新導向到指定的安裝器。\n\n本專案基於 GNU 通用公共授權條款第 3 版（GPLv3）開源。你可以在該授權條款下自由使用、研究、分享與修改本軟體。</string>
+    <string name="about_message">Install Restriction Bypasser\n\n一個開源的 Xposed 模組 + Jetpack Compose 應用程式。\n\n為選取的應用程式強制授予安裝權限，把它們的安裝意圖重新導向到指定的安裝器，並跳過未驗證應用程式的開發者驗證等待期。\n\n本專案基於 GNU 通用公共授權條款第 3 版（GPLv3）開源。你可以在該授權條款下自由使用、研究、分享與修改本軟體。</string>
 
     <!-- Common -->
     <string name="ok">確定</string>
