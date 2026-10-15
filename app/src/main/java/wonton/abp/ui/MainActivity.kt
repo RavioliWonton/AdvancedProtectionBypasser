@@ -1,6 +1,7 @@
 package wonton.abp.ui
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -96,16 +97,25 @@ class MainActivity : AppCompatActivity() {
 private fun MainScreen(vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
+    val message by vm.message.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     var menuExpanded by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var showAboutDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
     // System apps are hidden by default on every launch; this state is
     // intentionally not persisted.
     var showSystemApps by remember { mutableStateOf(false) }
     // Bottom-navigation destination: 0 = status page (home), 1 = app list.
     var selectedTab by remember { mutableStateOf(0) }
+
+    // One-shot notes (soft reboot results) surface as a toast.
+    LaunchedEffect(message) {
+        val text = message ?: return@LaunchedEffect
+        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+        vm.clearMessage()
+    }
 
     // Snapshot of the selection used to pin selected apps to the top of the
     // list. It is refreshed only when the app-list tab is (re)entered, so
@@ -197,6 +207,13 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                             },
                         )
                         DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_soft_reboot)) },
+                            onClick = {
+                                menuExpanded = false
+                                vm.softReboot()
+                            },
+                        )
+                        DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_about)) },
                             onClick = {
                                 menuExpanded = false
@@ -277,12 +294,16 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
         )
     }
 
-    if (showAboutDialog) {
-        AboutDialog(onDismiss = { showAboutDialog = false })
-    }
-
     if (showLanguageDialog) {
         LanguageDialog(onDismiss = { showLanguageDialog = false })
+    }
+
+    if (showAboutDialog) {
+        AboutDialog(
+            version = versionLabel(state),
+            framework = frameworkLabel(state),
+            onDismiss = { showAboutDialog = false },
+        )
     }
 }
 
@@ -513,20 +534,15 @@ private fun StatusDetailCard(state: UiState) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            // Framework name + version + internal version code
-            // (e.g. "LSPosed 2.2.0 (7021)").
-            state.frameworkName?.let { name ->
-                val version = state.frameworkVersion
-                val code = state.frameworkVersionCode
-                val value = buildString {
-                    append(name)
-                    if (!version.isNullOrEmpty()) append(' ').append(version)
-                    if (code != null) append(" (").append(code).append(')')
-                }
+            versionLabel(state)?.let { version ->
                 StatusRow(
-                    label = stringResource(R.string.status_framework),
-                    value = value,
+                    label = stringResource(R.string.status_app_version),
+                    value = version,
                 )
+                Spacer(Modifier.height(12.dp))
+            }
+            if (state.frameworkName != null) {
+                FrameworkRow(state)
                 Spacer(Modifier.height(12.dp))
             }
             StatusRow(
@@ -548,6 +564,35 @@ private fun StatusDetailCard(state: UiState) {
             )
         }
     }
+}
+
+/** "2.1.1 (14)" for the app - the app is the module - or null when unknown. */
+private fun versionLabel(state: UiState): String? {
+    val name = state.appVersionName ?: return null
+    val code = state.appVersionCode
+    return buildString {
+        append(name)
+        if (code != null) append(" (").append(code).append(')')
+    }
+}
+
+/** Framework name + version + internal code, e.g. "LSPosed 2.2.0 (7021)". */
+private fun frameworkLabel(state: UiState): String? {
+    val name = state.frameworkName ?: return null
+    return buildString {
+        append(name)
+        state.frameworkVersion?.takeIf { it.isNotEmpty() }?.let { append(' ').append(it) }
+        state.frameworkVersionCode?.let { append(" (").append(it).append(')') }
+    }
+}
+
+@Composable
+private fun FrameworkRow(state: UiState) {
+    val value = frameworkLabel(state) ?: return
+    StatusRow(
+        label = stringResource(R.string.status_framework),
+        value = value,
+    )
 }
 
 @Composable

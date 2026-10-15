@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Log
+import wonton.abp.common.ModuleLog
 import java.io.File
 import java.util.zip.ZipFile
 
@@ -48,26 +49,67 @@ class ApkStageProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
-        if (method != METHOD_STAGE_APK) return null
-        // Only the system may stage APKs here; anyone else gets nothing.
+        // Only the system may use this endpoint; anyone else gets nothing.
         val caller = Binder.getCallingUid()
         if (caller != Process.SYSTEM_UID) {
-            Log.w(TAG, "stageApk denied for uid $caller")
+            Log.w(TAG, "$method denied for uid $caller")
             return result(false, "denied for uid $caller")
         }
+        return when (method) {
+            METHOD_STAGE_APK -> stageApk(extras)
+            METHOD_CLEAR_CACHE -> clearCache()
+            METHOD_CLEAR_SESSION -> clearSession(extras)
+            else -> null
+        }
+    }
+
+    /**
+     * Empties `cache/apks/`. Called by the module once per start, so the staged
+     * APKs of past installs (up to a few hundred megabytes) never pile up; the app
+     * does the same when its process starts fresh, which is the only other moment
+     * where no install of ours can be running.
+     */
+    private fun clearCache(): Bundle {
+        val purge = InstallHandoff.purgeApks(requireNotNull(context))
+        Log.i(TAG, "clearCache: ${purge.message}")
+        return result(purge.ok, "cleared ${purge.message}")
+    }
+
+    /**
+     * Deletes the staged copy of one session.
+     *
+     * Called when an install ends without the proxy reporting back - it was killed
+     * with its process, or it hung - so its copy is the only thing left behind.
+     * Only files named for that session are touched, so an install that is still
+     * running keeps its APK.
+     */
+    private fun clearSession(extras: Bundle?): Bundle {
+        val sid = extras?.getInt(KEY_SESSION_ID, ModuleLog.NO_SESSION)
+            ?: ModuleLog.NO_SESSION
+        if (sid == ModuleLog.NO_SESSION) {
+            return result(false, "no session id in extras")
+        }
+        val purge = InstallHandoff.purgeApks(requireNotNull(context), sid)
+        Log.i(TAG, "clearSession: session=$sid ${purge.message}")
+        return result(purge.ok, "cleared session $sid: ${purge.message}")
+    }
+
+    /**
+     * Copies the session APK the module opened into `cache/apks/`, where the
+     * FileProvider can serve it to the installer.
+     */
+    private fun stageApk(extras: Bundle?): Bundle {
         @Suppress("DEPRECATION")
         val source = extras?.getParcelable<ParcelFileDescriptor>(KEY_PFD)
             ?: return result(false, "no file descriptor in extras")
         val sid = extras.getInt(KEY_SESSION_ID, -1)
         // Size the module measured on the session APK, to detect a short copy.
         val expected = extras.getLong(KEY_EXPECTED_BYTES, -1L)
+        val pkg = extras.getString(KEY_PACKAGE_NAME)
         val ctx = requireNotNull(context)
-        val out = File(File(ctx.cacheDir, "apks").apply { mkdirs() }, "session-$sid.apk")
+        val dir = InstallHandoff.apkDir(ctx).apply { mkdirs() }
+        val out = File(dir, InstallHandoff.tempApkName("session", pkg, sid))
         val staged = runCatching {
-            // Drop the copies of earlier sessions: they are tens of megabytes and
-            // nothing can come back for them.
-            out.parentFile?.listFiles { f -> f.name.startsWith("session-") && f.name != out.name }
-                ?.forEach { runCatching { it.delete() } }
             ParcelFileDescriptor.AutoCloseInputStream(source).use { input ->
                 out.outputStream().use { target -> input.copyTo(target) }
             }
@@ -148,8 +190,17 @@ class ApkStageProvider : ContentProvider() {
         const val AUTHORITY = "wonton.abp.stage"
 
         const val METHOD_STAGE_APK = "stageApk"
+
+        /** Wipes `cache/apks/`; called once per module start and per fresh process. */
+        const val METHOD_CLEAR_CACHE = "clearCache"
+
+        /** Deletes the staged copies of one session, after it ended without a report. */
+        const val METHOD_CLEAR_SESSION = "clearSession"
         const val KEY_PFD = "pfd"
         const val KEY_SESSION_ID = "sessionId"
+
+        /** Package the session APK holds, used only to name the copy. */
+        const val KEY_PACKAGE_NAME = "packageName"
 
         /** Size of the source APK; a short copy is reported as a failure. */
         const val KEY_EXPECTED_BYTES = "expectedBytes"

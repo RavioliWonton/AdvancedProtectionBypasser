@@ -2,7 +2,6 @@ package wonton.abp.install
 
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -58,12 +57,15 @@ class InstallProxyActivity : Activity() {
     /** APK handed to the installer, so its URI grant can be dropped again. */
     private var handedApk: File? = null
 
+    /** When the installer was started, so an activity result can be timed. */
+    private var handedOverAt = 0L
+
     /**
-     * Fires when the installer's activity finishes: the flow is over, so the wait
-     * in [InstallHandoff.awaitInstalled] can stop instead of running into its
-     * timeout. Conflated because the signal only ever carries "it is over".
+     * Fires when the installer's activity finishes, carrying how it ended: how
+     * long it lived and the outcome the installer reported, if any. Conflated
+     * because only the first ending matters.
      */
-    private val flowEnded = Channel<Unit>(Channel.CONFLATED)
+    private val flowEnded = Channel<InstallHandoff.FlowEnd>(Channel.CONFLATED)
 
     /**
      * Scope for the install flow. Cancelled in [onDestroy] so the wait loop can
@@ -132,6 +134,14 @@ class InstallProxyActivity : Activity() {
      */
     private fun runInstallFlow(stagedPath: String?, apkUri: Uri?, installer: String) {
         scope.launch {
+            // 0. Reap what past flows had to leave behind (see finishFlow): an APK
+            //    older than any install can still need it is not in use, and this
+            //    flow is about to add its own.
+            withContext(Dispatchers.IO) {
+                val purge = InstallHandoff.purgeStaleApks(this@InstallProxyActivity)
+                if (purge.total > 0) log("[proxy] reaped stale apks: ${purge.message}")
+            }
+
             // 1. Make sure the APK sits in our own cache/apks/.
             val copied = withContext(Dispatchers.IO) {
                 if (stagedPath != null) stagedApk(stagedPath) else copyToCache(requireNotNull(apkUri))
@@ -142,6 +152,8 @@ class InstallProxyActivity : Activity() {
                 finishFlow(pkg = null, success = false)
                 return@launch
             }
+            // Owned from here on: whatever ends this flow also cleans it up.
+            handedApk = copied
 
             // 2. Parse target package + versionCode from the APK itself.
             val archive = withContext(Dispatchers.IO) {
@@ -157,12 +169,25 @@ class InstallProxyActivity : Activity() {
                 return@launch
             }
 
-            // 3. Hand the APK to the configured installer, for result: when the
-            //    installer's activity finishes, this flow is over - whether it
-            //    installed something or the user just left it.
-            handedApk = copied
+            // Give the temp file a name that says which package it holds. Path B
+            // already got that name from ApkStageProvider.
+            val apk = withContext(Dispatchers.IO) {
+                if (stagedPath == null) {
+                    InstallHandoff.renameTempApkWithPackage(copied, targetPkg)
+                } else {
+                    copied
+                }
+            }
+            handedApk = apk
+
+            // 3. Hand the APK to the configured installer, for result: installers
+            //    that honour the install-for-result contract report the real
+            //    outcome, and for the rest the activity result is only a hint - it
+            //    is cancelled at launch for singleInstance/singleTask targets, and
+            //    trampoline installers finish before the install even starts.
+            handedOverAt = System.currentTimeMillis()
             val launched = InstallHandoff.launchInstaller(
-                this@InstallProxyActivity, copied, installer, REQUEST_INSTALLER, ::log
+                this@InstallProxyActivity, apk, installer, REQUEST_INSTALLER, ::log
             )
             log("[proxy] launchInstaller($installer) -> $launched")
             if (!launched) {
@@ -170,15 +195,38 @@ class InstallProxyActivity : Activity() {
                 return@launch
             }
 
-            // 4. Stay alive (invisible) and wait for the install result. The wait
-            //    also watches package broadcasts, so a successful install ends it
-            //    right away instead of waiting for the user to dismiss the
-            //    installer's success dialog.
-            val success = InstallHandoff.awaitInstalled(
+            // 4. Stay alive (invisible) and wait for the install result: the
+            //    package broadcast ends the wait right away, so a successful
+            //    install does not wait for the user to dismiss the installer's
+            //    success dialog, and an installer that installs in the background
+            //    is still caught.
+            val result = InstallHandoff.awaitInstalled(
                 this@InstallProxyActivity, targetPkg, targetVersion, flowEnded, ::log
             )
-            log("[proxy] wait finished: success=$success")
-            finishFlow(targetPkg, success)
+            log("[proxy] wait finished: $result")
+            when (result) {
+                InstallHandoff.WaitResult.INSTALLED ->
+                    finishFlow(targetPkg, success = true)
+
+                InstallHandoff.WaitResult.FAILED ->
+                    // The installer told us it failed, so it is done with the APK.
+                    finishFlow(targetPkg, success = false)
+
+                InstallHandoff.WaitResult.NOT_INSTALLED -> {
+                    // Its UI is gone, but installers that work from a background
+                    // task (a second activity, a Shizuku/root session) may still be
+                    // reading the file, so it is kept and reaped by age later.
+                    log("[proxy] keeping the APK: the installer may still be reading it")
+                    finishFlow(targetPkg, success = false, keepApk = true)
+                }
+
+                InstallHandoff.WaitResult.TIMED_OUT -> {
+                    // The installer is still open and the user may yet confirm it,
+                    // so this flow must not delete the APK it is serving.
+                    log("[proxy] installer still open; leaving the APK in place")
+                    finishFlow(targetPkg, success = false, keepApk = true)
+                }
+            }
         }
     }
 
@@ -188,12 +236,7 @@ class InstallProxyActivity : Activity() {
 
     private fun copyToCache(uri: Uri): File? = try {
         val apks = File(cacheDir, "apks").apply { mkdirs() }
-        // Clear stale copies from previous *URI* runs. Only install-*.apk is
-        // touched: session-*.apk files are staged by the module and another flow
-        // may still be reading its own.
-        apks.listFiles { f -> f.name.startsWith("install-") }
-            ?.forEach { runCatching { it.delete() } }
-        val out = File(apks, "install-${System.currentTimeMillis()}.apk")
+        val out = File(apks, InstallHandoff.tempApkName("install", packageName = null))
         log("[proxy] copying uri=$uri to ${out.absolutePath}")
         // file:// URIs cannot be opened through the content resolver, so read
         // the path directly as a fallback (best effort; it may be unreadable
@@ -245,25 +288,49 @@ class InstallProxyActivity : Activity() {
      * for; when this run belongs to a session the module intercepted (path B),
      * the outcome is reported back to system_server, which has no activity result
      * to look at.
+     *
+     * The APK is deleted when the install is confirmed, and when the installer
+     * reported a failure of its own - in both cases it is done with the file.
+     * [keepApk] covers the endings where that cannot be known: the installer is
+     * still open, or it closed its UI while another of its components may still be
+     * reading the APK. Those leftovers are reaped by age (see
+     * [InstallHandoff.purgeStaleApks]), never by deleting a file an install may
+     * still need.
      */
-    private fun finishFlow(pkg: String?, success: Boolean) {
+    private fun finishFlow(pkg: String?, success: Boolean, keepApk: Boolean = false) {
         if (!finished.compareAndSet(false, true)) {
             log("[proxy] finishFlow skipped (already finishing)")
             return
         }
-        log("[proxy] finishFlow: pkg=$pkg success=$success session=$sessionId")
+        log("[proxy] finishFlow: pkg=$pkg success=$success session=$sessionId keepApk=$keepApk")
         reportToModule(success, pkg)
+        if (!keepApk) deleteHandedApk()
         val data = Intent().apply {
-            // Intent.EXTRA_INSTALL_RESULT is @hide; its stable value is
-            // "android.intent.extra.INSTALL_RESULT".
+            // Reported in the platform's convention for install-for-result: the
+            // result code carries success, EXTRA_INSTALL_RESULT carries
+            // PackageManager's code (see InstallHandoff.INSTALL_RESULT_SUCCEEDED).
+            // An app that follows the documented contract reads both, and would
+            // read PackageInstaller.STATUS_* values backwards.
             putExtra(
-                EXTRA_INSTALL_RESULT,
-                if (success) PackageInstaller.STATUS_SUCCESS else PackageInstaller.STATUS_FAILURE
+                InstallHandoff.INSTALL_RESULT_EXTRA,
+                if (success) InstallHandoff.INSTALL_RESULT_SUCCEEDED
+                else InstallHandoff.INSTALL_RESULT_ABORTED
             )
             if (pkg != null) putExtra(Intent.EXTRA_PACKAGE_NAME, pkg)
         }
-        setResult(RESULT_OK, data)
+        setResult(if (success) RESULT_OK else RESULT_FIRST_USER, data)
         finish()
+    }
+
+    /** Deletes the APK this flow handed to the installer, grant included. */
+    private fun deleteHandedApk() {
+        val apk = handedApk ?: return
+        val deleted = runCatching { apk.delete() }.getOrDefault(false)
+        log("[proxy] apk ${if (deleted) "deleted" else "could not be deleted"}: $apk")
+        // The grant goes with the file: a permission on a URI that no longer
+        // resolves only keeps the installer's uid in way too many grant tables.
+        InstallHandoff.revokeRead(this, apk, ::log)
+        handedApk = null
     }
 
     private fun reportToModule(success: Boolean, pkg: String?) {
@@ -284,29 +351,35 @@ class InstallProxyActivity : Activity() {
     }
 
     /**
-     * The installer's activity finished, so the flow it was part of is over.
-     *
-     * This is the only reliable sign that the user left the installer without
-     * installing anything: there is no package broadcast for that, and waiting
-     * for the timeout would keep the caller (and, on path B, the app that
-     * requested the install) hanging for minutes.
+     * The installer's activity finished. Its result is not the flow's verdict by
+     * itself: with a `singleInstance`/`singleTask` installer the system cancels it
+     * the moment the activity is started, and a trampoline installer finishes its
+     * activity to continue in another one. [InstallHandoff.awaitInstalled] knows
+     * both cases and decides what the timing and the reported code are worth.
      */
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_INSTALLER) return
-        log("[proxy] installer finished: resultCode=$resultCode -> stop waiting")
-        flowEnded.trySend(Unit)
+        val elapsedMs = if (handedOverAt == 0L) 0L else System.currentTimeMillis() - handedOverAt
+        // A code the installer did not set stays unset (Int.MIN_VALUE sentinel).
+        val reported = data?.getIntExtra(InstallHandoff.INSTALL_RESULT_EXTRA, Int.MIN_VALUE)
+            ?.takeIf { it != Int.MIN_VALUE }
+        log(
+            "[proxy] installer activity finished: resultCode=$resultCode " +
+                "installResult=$reported elapsed=${elapsedMs}ms"
+        )
+        flowEnded.trySend(InstallHandoff.FlowEnd(elapsedMs, reported))
     }
 
     override fun onDestroy() {
-        // Do NOT delete the staged APK here: the installer may still be reading
-        // it through the FileProvider while the install is in flight. Stale
-        // files are cleaned up by the next run instead.
+        // Deliberate endings delete their APK - and its grant - in finishFlow(). A
+        // flow that dies with the process leaves both behind on purpose: an
+        // installer that already holds the URI may still be reading it, so the file
+        // is reaped by age on the next flow instead.
         log("[proxy] onDestroy")
         finished.set(true)
         scope.cancel()
         flowEnded.close()
-        handedApk?.let { InstallHandoff.revokeRead(this, it, ::log) }
         super.onDestroy()
     }
 
@@ -334,8 +407,5 @@ class InstallProxyActivity : Activity() {
          * outcome back to the module.
          */
         const val EXTRA_ABP_SESSION_ID = "wonton.abp.extra.SESSION_ID"
-
-        /** Intent.EXTRA_INSTALL_RESULT (@hide); stable string value. */
-        private const val EXTRA_INSTALL_RESULT = "android.intent.extra.INSTALL_RESULT"
     }
 }

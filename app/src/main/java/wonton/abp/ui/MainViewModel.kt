@@ -1,6 +1,7 @@
 package wonton.abp.ui
 
 import android.app.Application
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,12 +9,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import wonton.abp.App
+import wonton.abp.R
 import wonton.abp.common.AdvancedProtection
 import wonton.abp.common.Gms
 import wonton.abp.common.Prefs
 import wonton.abp.data.AppInfo
 import wonton.abp.data.AppRepository
 import wonton.abp.data.ConfigStore
+import wonton.abp.data.ModuleReload
 import wonton.abp.data.UiPrefs
 
 /**
@@ -39,6 +42,10 @@ data class UiState(
     val gmsAvailable: Boolean = true,
     /** User closed the "no Google Play services" notice on the status page. */
     val noGmsNoticeDismissed: Boolean = false,
+    /** `versionName` of this app, which is the module itself. */
+    val appVersionName: String? = null,
+    /** `versionCode` of this app, which is the module itself. */
+    val appVersionCode: Long? = null,
     /** Bound framework name (e.g. "LSPosed"), or null when the module is inactive. */
     val frameworkName: String? = null,
     /** Bound framework version, or null when the module is inactive. */
@@ -63,6 +70,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         UiState(
             gmsAvailable = Gms.isAvailable(app),
             noGmsNoticeDismissed = uiPrefs.isNoGmsNoticeDismissed(),
+            appVersionName = appVersion(app).first,
+            appVersionCode = appVersion(app).second,
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -82,6 +91,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A fresh store bound to the currently available service. */
     private fun currentStore(): ConfigStore = ConfigStore(App.service.value)
+
+    /**
+     * `versionName`/`versionCode` of this app. The app *is* the module, so this
+     * is also the module version.
+     */
+    private fun appVersion(app: Application): Pair<String?, Long?> = runCatching {
+        val info = app.packageManager.getPackageInfo(app.packageName, 0)
+        info.versionName to info.longVersionCode
+    }.getOrElse { Pair(null, null) }
 
     /** Reads module state, selection and installer live from the store. */
     private fun refreshFromStore() {
@@ -180,4 +198,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         uiPrefs.dismissNoGmsNotice()
         _state.value = _state.value.copy(noGmsNoticeDismissed = true)
     }
+
+    /**
+     * Asks the framework to hot reload the module: the processes it already hooked
+     * pick up the current module code, hooks included, without a reboot.
+     */
+    fun softReboot() {
+        ModuleReload.reloadAll(App.service.value) { outcome ->
+            _message.value = when {
+                outcome == null -> str(R.string.soft_reboot_inactive)
+                outcome.targets == 0 -> str(R.string.soft_reboot_none)
+                outcome.stale == 0 -> str(R.string.soft_reboot_current)
+                else -> str(R.string.soft_reboot_done, outcome.reloaded, outcome.failed)
+            }
+        }
+    }
+
+    /** One-shot note for the UI; [clearMessage] is called once it was shown. */
+    val message: StateFlow<String?> get() = _message.asStateFlow()
+    private val _message = MutableStateFlow<String?>(null)
+
+    fun clearMessage() {
+        _message.value = null
+    }
+
+    private fun str(@StringRes id: Int, vararg args: Any): String =
+        getApplication<Application>().getString(id, *args)
 }

@@ -5,3 +5,7 @@ description=Force-grants install permission and redirects install intents for se
 minApiVersion=102
 targetApiVersion=102
 staticScope=true
+# API 102: let an app update hot reload the new module code into the processes
+# that are already hooked instead of keeping them on the old code until reboot.
+# The module still has to accept it (onHotReloading), which it does.
+autoHotReload=true

@@ -8,6 +8,11 @@
     <string name="menu_hide_system_apps">Hide system apps</string>
     <string name="menu_language">App language</string>
     <string name="menu_about">About</string>
+    <string name="menu_soft_reboot">Hot reload module</string>
+    <string name="soft_reboot_inactive">The module is not connected to the framework.</string>
+    <string name="soft_reboot_none">Nothing to reload: the module is not hooked into any process yet.</string>
+    <string name="soft_reboot_current">Already up to date, nothing to reload.</string>
+    <string name="soft_reboot_done">Hot reloaded %1$d process(es), %2$d failed.</string>
 
     <!-- Language picker dialog -->
     <string name="language_dialog_title">App language</string>
@@ -67,6 +72,7 @@
     <string name="status_module_active_desc">The module is enabled and connected to the framework. Selected apps get their install restrictions bypassed.</string>
     <string name="status_module_inactive">Activation failed</string>
     <string name="status_report_logs">The module is not connected to the Xposed framework. Enable it in the LSPosed manager, select its scope and reboot. If it still fails, please package the logs from the LSPosed manager and report the issue.</string>
+    <string name="status_app_version">App version</string>
     <string name="status_framework">Framework</string>
     <string name="status_selected_apps">Selected apps</string>
     <string name="status_advanced_protection">Advanced Protection</string>

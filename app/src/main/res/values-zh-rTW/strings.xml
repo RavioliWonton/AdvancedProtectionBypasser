@@ -8,6 +8,11 @@
     <string name="menu_hide_system_apps">隱藏系統應用程式</string>
     <string name="menu_language">應用程式語言</string>
     <string name="menu_about">關於</string>
+    <string name="menu_soft_reboot">熱重載模組</string>
+    <string name="soft_reboot_inactive">模組未連線到框架。</string>
+    <string name="soft_reboot_none">沒有可重新載入的目標：模組尚未注入任何處理程序。</string>
+    <string name="soft_reboot_current">已是最新版本，無需重新載入。</string>
+    <string name="soft_reboot_done">已重新載入 %1$d 個處理程序，%2$d 個失敗。</string>
 
     <!-- Language picker dialog -->
     <string name="language_dialog_title">應用程式語言</string>
@@ -65,6 +70,7 @@
     <string name="status_module_active_desc">模組已啟用並已連接到框架。選取的應用程式會被繞過安裝限制。</string>
     <string name="status_module_inactive">啟用失敗</string>
     <string name="status_report_logs">模組未連接到 Xposed 框架。請在 LSPosed 管理器中啟用本模組、勾選作用域並重新開機。如果仍然失敗，請在 LSPosed 管理器中打包日誌並回報問題。</string>
+    <string name="status_app_version">應用程式版本</string>
     <string name="status_framework">框架</string>
     <string name="status_selected_apps">已選擇應用程式</string>
     <string name="status_advanced_protection">進階保護</string>

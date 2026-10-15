@@ -18,6 +18,8 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import androidx.annotation.RequiresApi
 import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
+import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
@@ -67,6 +69,13 @@ class XposedEntry : XposedModule() {
     private var cachedCtx: Context? = null
 
     /**
+     * system_server's class loader. Kept because hot reload hands no loader to the
+     * new generation; see [onHotReloading].
+     */
+    @Volatile
+    private var systemServerClassLoader: ClassLoader? = null
+
+    /**
      * Scope for the asynchronous part of the session-install hand-off. It lives
      * exactly as long as system_server, so it is never cancelled.
      */
@@ -88,11 +97,112 @@ class XposedEntry : XposedModule() {
 
     override fun onSystemServerStarting(param: SystemServerStartingParam) {
         log(Log.INFO, TAG, "=== onSystemServerStarting: ABP module active in system_server ===")
-        val cl = param.classLoader
-        hookInstallPermission(cl)
-        hookActivityStart(cl)
-        hookPackageInstallerSession(cl)
+        clearInstallCacheOnStart()
+        systemServerClassLoader = param.classLoader
+        installHooks(param.classLoader)
         log(Log.INFO, TAG, "=== onSystemServerStarting done: hooks installed ===")
+    }
+
+    /**
+     * Installs every hook this module needs: for the initial load, and again for
+     * each generation the framework hot reloads into a process.
+     *
+     * Each step is guarded on its own: on the reload path one hook the framework
+     * refuses must not keep the other two from being installed.
+     */
+    private fun installHooks(cl: ClassLoader) {
+        runCatching { hookInstallPermission(cl) }
+            .onFailure { log(Log.ERROR, TAG, "hookInstallPermission failed", it) }
+        runCatching { hookActivityStart(cl) }
+            .onFailure { log(Log.ERROR, TAG, "hookActivityStart failed", it) }
+        runCatching { hookPackageInstallerSession(cl) }
+            .onFailure { log(Log.ERROR, TAG, "hookPackageInstallerSession failed", it) }
+    }
+
+    /**
+     * Accepts a hot reload - the framework's default is to refuse it.
+     *
+     * Hot reload is how new module code, and with it new hooks, reaches a process
+     * that is already running the old code: without rebooting. `module.prop` asks
+     * for it automatically after an app update (`autoHotReload`), and the app's
+     * menu can request it for the same reason; both end here.
+     *
+     * This callback runs in the **old** code. The system-server class loader is
+     * handed to the next generation through the saved instance state, because
+     * [onHotReloaded] gets no loader of its own and the hooks need the target's,
+     * not the module's.
+     */
+    override fun onHotReloading(param: HotReloadingParam): Boolean {
+        log(Log.INFO, TAG, "=== onHotReloading: extras=${param.extras} -> accepted ===")
+        param.setSavedInstanceState(systemServerClassLoader)
+        return true
+    }
+
+    /**
+     * Puts the hooks back after a hot reload.
+     *
+     * This callback runs in the **new** code, and nothing is replayed for us: the
+     * interface's default implementation only *removes* the hooks of the previous
+     * generation, so a module that does not override this comes out of a reload
+     * completely inert - with no error anywhere.
+     */
+    override fun onHotReloaded(param: HotReloadedParam) {
+        log(Log.INFO, TAG, "=== onHotReloaded: ${param.processName} ===")
+        param.oldHookHandles.forEach { runCatching { it.unhook() } }
+        if (!param.isSystemServer) {
+            // This module only does anything in system_server; nothing to install.
+            log(Log.WARN, TAG, "=== onHotReloaded: ${param.processName} is not system_server ===")
+            return
+        }
+        val cl = param.savedInstanceState as? ClassLoader ?: javaClass.classLoader
+        systemServerClassLoader = cl
+        installHooks(cl)
+        // The previous generation's proxy-log receiver is still registered with
+        // ActivityManagerService and cannot be unregistered from here, so this only
+        // adds ours on top. That keeps install results reaching the generation the
+        // sessions belong to; until the process restarts, app log lines may show up
+        // twice in the Xposed log.
+        ensureProxyLogReceiver()
+        log(Log.INFO, TAG, "=== onHotReloaded done: hooks installed ===")
+    }
+
+    /**
+     * Empties the app's install cache once per module start.
+     *
+     * Staged APKs are tens to hundreds of megabytes and only matter while their
+     * install runs, so nothing can come back for them after a restart. The
+     * deletion has to happen inside the app's process (system_server cannot write
+     * into another app's data dir); that is what [ApkStageProvider] is for.
+     *
+     * It is silent by design - no UI, nothing but a log line - and it waits a
+     * moment first, because the call starts the app's process and should not
+     * compete with boot.
+     */
+    private fun clearInstallCacheOnStart() {
+        installScope.launch {
+            delay(CACHE_CLEAR_DELAY_MS.milliseconds)
+            val ctx = systemContext()
+            if (ctx == null) {
+                log(Log.WARN, TAG, "clearInstallCache: no system context")
+                return@launch
+            }
+            val result = runCatching {
+                ctx.contentResolver.call(
+                    STAGE_URI, ApkStageProvider.METHOD_CLEAR_CACHE, null, null
+                )
+            }.onFailure {
+                log(Log.WARN, TAG, "clearInstallCache failed", it)
+            }.getOrNull()
+            if (result == null) {
+                log(Log.WARN, TAG, "clearInstallCache: provider not available")
+            } else {
+                log(
+                    Log.INFO, TAG,
+                    "clearInstallCache -> ok=${result.getBoolean(ApkStageProvider.KEY_OK)} " +
+                        result.getString(ApkStageProvider.KEY_MESSAGE)
+                )
+            }
+        }
     }
 
     /**
@@ -117,7 +227,21 @@ class XposedEntry : XposedModule() {
         }
         val filter = IntentFilter(ModuleLog.ACTION)
         runCatching {
-            ctx.registerReceiver(proxyLogReceiver, filter, ModuleLog.PERMISSION, null)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // targetSdk 34+ makes the export state mandatory. The sender is the
+                // app, which is a different uid, so the receiver has to be able to
+                // receive from other apps: what keeps strangers out is the
+                // signature-level permission above, not the export flag.
+                ctx.registerReceiver(
+                    proxyLogReceiver,
+                    filter,
+                    ModuleLog.PERMISSION,
+                    null,
+                    Context.RECEIVER_EXPORTED,
+                )
+            } else {
+                ctx.registerReceiver(proxyLogReceiver, filter, ModuleLog.PERMISSION, null)
+            }
         }.onFailure {
             log(Log.WARN, TAG, "proxy log receiver registration failed", it)
         }.onSuccess {
@@ -890,7 +1014,9 @@ class XposedEntry : XposedModule() {
         rememberPendingSession(sid, session, receiver, pkg)
         installScope.launch {
             try {
-                val copied = withContext(Dispatchers.IO) { copyApkForInstaller(ctx, baseApk, sid) }
+                val copied = withContext(Dispatchers.IO) {
+                    copyApkForInstaller(ctx, baseApk, sid, pkg)
+                }
                 if (copied == null) {
                     forgetPendingSession(sid)
                     sendSessionStatus(session, receiver, pkg, false, "failed to stage apk")
@@ -904,6 +1030,9 @@ class XposedEntry : XposedModule() {
                         session, receiver, pkg, false,
                         "could not start the install proxy"
                     )
+                    // Nothing will ever report for this session, and the copy we
+                    // just made has no owner left: drop it here.
+                    clearStagedApk(sid)
                     return@launch
                 }
                 log(
@@ -915,6 +1044,7 @@ class XposedEntry : XposedModule() {
                 forgetPendingSession(sid)
                 log(Log.WARN, TAG, "[B] proxySessionInstall failed", t)
                 sendSessionStatus(session, receiver, pkg, false, "internal error")
+                clearStagedApk(sid)
             }
         }
     }
@@ -979,6 +1109,9 @@ class XposedEntry : XposedModule() {
                 stale.session, stale.receiver, stale.pkg, false,
                 "the install did not report back"
             )
+            // The proxy never reported: it died with its process, or it hung.
+            // Either way it is not coming back for its copy of the APK.
+            clearStagedApk(sid)
         }
         pendingSessions[sid] = PendingSession(session, receiver, pkg, watchdog)
     }
@@ -986,6 +1119,45 @@ class XposedEntry : XposedModule() {
     /** Drops a session we already answered; its watchdog must not fire later. */
     private fun forgetPendingSession(sid: Int) {
         pendingSessions.remove(sid)?.watchdog?.cancel()
+    }
+
+    /**
+     * Deletes the copies this app staged for session [sid].
+     *
+     * Used on the endings where the proxy will not clean up after itself: it never
+     * started, or it never reported (see the watchdog in [rememberPendingSession]).
+     * The proxy taking care of its own endings is what keeps the two from racing,
+     * and its report is also what tells us an installer may still be reading its
+     * APK - in that one case the file is left alone and reaped by the next
+     * start-up clear.
+     *
+     * system_server cannot write into this app's data directory, so the deletion
+     * goes through [ApkStageProvider] like the staging itself. It only touches
+     * files named for that session, so an install that is still running keeps its
+     * APK.
+     */
+    private fun clearStagedApk(sid: Int) {
+        if (sid == ModuleLog.NO_SESSION) return
+        installScope.launch {
+            val ctx = systemContext()
+            if (ctx == null) {
+                log(Log.WARN, TAG, "[B] cannot clear session $sid: no system context")
+                return@launch
+            }
+            val extras = Bundle().apply { putInt(ApkStageProvider.KEY_SESSION_ID, sid) }
+            val result = runCatching {
+                ctx.contentResolver.call(
+                    STAGE_URI, ApkStageProvider.METHOD_CLEAR_SESSION, null, extras
+                )
+            }.onFailure {
+                log(Log.WARN, TAG, "[B] clearStagedApk($sid) failed", it)
+            }.getOrNull()
+            log(
+                Log.INFO, TAG,
+                "[B] clearStagedApk($sid) -> " +
+                    "${result?.getString(ApkStageProvider.KEY_MESSAGE)}"
+            )
+        }
     }
 
     /** Answers a session with the outcome the app process reported for it. */
@@ -1070,13 +1242,15 @@ class XposedEntry : XposedModule() {
      * the descriptor is sent through the app's [ApkStageProvider] over Binder and
      * the app's own process performs the copy.
      */
-    private fun copyApkForInstaller(ctx: Context, src: File, sid: Int): File? = try {
-        log(Log.INFO, TAG, "[B] stageApk: calling provider src=${src.absolutePath} sid=$sid")
+    private fun copyApkForInstaller(ctx: Context, src: File, sid: Int, pkg: String): File? = try {
+        log(Log.INFO, TAG, "[B] stageApk: calling provider src=${src.absolutePath} sid=$sid pkg=$pkg")
         val pfd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)
         val result = try {
             val args = Bundle().apply {
                 putParcelable(ApkStageProvider.KEY_PFD, pfd)
                 putInt(ApkStageProvider.KEY_SESSION_ID, sid)
+                // Only used to name the copy, so the cache stays readable.
+                putString(ApkStageProvider.KEY_PACKAGE_NAME, pkg)
                 // Lets the app notice a short copy instead of handing a truncated
                 // APK to the installer.
                 putLong(ApkStageProvider.KEY_EXPECTED_BYTES, pfd.statSize)
@@ -1162,6 +1336,12 @@ class XposedEntry : XposedModule() {
          * proxy that never reports back at all (killed process, ...).
          */
         private const val SESSION_WATCHDOG_MS = InstallHandoff.POLL_TIMEOUT_MS + 60_000L
+
+        /**
+         * Delay before the install cache is cleared: that call starts the app's
+         * process, so it should not compete with system boot.
+         */
+        private const val CACHE_CLEAR_DELAY_MS = 10_000L
 
         private val PROXY_COMPONENT =
             ComponentName(OWN_PACKAGE, "wonton.abp.install.InstallProxyActivity")

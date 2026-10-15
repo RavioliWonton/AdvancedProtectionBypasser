@@ -18,13 +18,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -33,10 +33,15 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import wonton.abp.R
+import kotlin.time.Duration.Companion.milliseconds
 
 /** Success green used for the "enabled" status suffix. */
 private val StatusEnabledColor = Color(0xFF2E7D32)
+
+/** How long typing has to pause before the package name is looked up. */
+private const val EXISTENCE_CHECK_DELAY_MS = 500L
 
 /**
  * Whether [pkg] is installed. An empty value is treated as "fine" because
@@ -68,11 +73,23 @@ fun SettingsDialog(
     onDismiss: () -> Unit,
 ) {
     var text by rememberSaveable { mutableStateOf(initialInstaller) }
-    // Set when the field loses focus with a package name that is not installed.
-    // It only warns; confirming still saves the value.
+    // Set when the field holds a package name that is not installed. It only
+    // warns; confirming still saves the value.
     var notInstalled by rememberSaveable { mutableStateOf(false) }
+    // Set once the user has touched the field, so the dialog does not greet them
+    // with a warning about the package that was already configured.
+    var edited by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val default = stringResource(R.string.default_installer)
+
+    // The check runs while typing instead of on focus loss: this dialog has a
+    // single focusable field, so it never loses focus until it closes - which is
+    // exactly when the warning would be useless.
+    LaunchedEffect(text) {
+        if (!edited) return@LaunchedEffect
+        delay(EXISTENCE_CHECK_DELAY_MS.milliseconds)
+        notInstalled = !isPackageInstalled(context, text.trim())
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -96,7 +113,7 @@ fun SettingsDialog(
                     value = text,
                     onValueChange = {
                         text = it
-                        notInstalled = false
+                        edited = true
                     },
                     singleLine = true,
                     isError = notInstalled,
@@ -108,13 +125,7 @@ fun SettingsDialog(
                             )
                         }
                     } else null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { focusState ->
-                            if (!focusState.isFocused) {
-                                notInstalled = !isPackageInstalled(context, text.trim())
-                            }
-                        },
+                    modifier = Modifier.fillMaxWidth(),
                     label = { Text(stringResource(R.string.installer_dialog_hint)) },
                 )
 
@@ -224,16 +235,62 @@ private fun SwitchRow(
     }
 }
 
+/**
+ * What this build is: the app is the module, so its version and the framework it
+ * is running under are the two things worth knowing.
+ */
 @Composable
-fun AboutDialog(onDismiss: () -> Unit) {
+fun AboutDialog(
+    version: String?,
+    framework: String?,
+    onDismiss: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.app_name)) },
-        text = { Text(stringResource(R.string.about_message)) },
+        text = {
+            Column {
+                version?.let {
+                    AboutRow(stringResource(R.string.status_app_version), it)
+                    Spacer(Modifier.height(8.dp))
+                }
+                framework?.let {
+                    AboutRow(stringResource(R.string.status_framework), it)
+                    Spacer(Modifier.height(16.dp))
+                }
+                Text(
+                    text = stringResource(R.string.about_message),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
         confirmButton = {
             TextButton(onClick = onDismiss) {
                 Text(stringResource(R.string.close))
             }
         },
     )
+}
+
+/** "Label      value" line for the about dialog. */
+@Composable
+private fun AboutRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+        )
+    }
 }

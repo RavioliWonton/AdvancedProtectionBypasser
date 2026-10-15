@@ -15,8 +15,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import wonton.abp.common.ModuleLog
 import java.io.File
-import kotlin.time.Duration.Companion.milliseconds
+import kotlin.random.Random
 
 /**
  * The install hand-off, always executed by [InstallProxyActivity] in the app's
@@ -27,8 +28,24 @@ import kotlin.time.Duration.Companion.milliseconds
  *
  * The two things both paths do: hand the APK in `cache/apks/` to the configured
  * installer through our FileProvider, then wait until the package shows up in
- * `PackageManager` - or until the installer's UI is gone, which means the user
- * left it without installing.
+ * `PackageManager`.
+ *
+ * The wait deliberately does *not* trust the installer's activity alone. The three
+ * installer families in the wild behave very differently:
+ *
+ *  - the single-activity installers ([moe.shizuku.installer] and friends) stay
+ *    open until the install is done, so their activity result is a real signal,
+ *  - installers whose activity is `singleInstance`/`singleTask` (InstallerX,
+ *    InstallWithOptions, the Flutter Shizuku installers) get their activity
+ *    result cancelled by the system the moment we start them, so a result that
+ *    arrives immediately means nothing at all,
+ *  - installers built as a trampoline (Universal Installer's
+ *    `DialogInstallActivity`) finish their activity and hand the URI to a second
+ *    activity in another task, which then reads the APK we already gave them.
+ *
+ * Because of the last two, an APK is only deleted when its install is confirmed,
+ * and leftovers are reaped by age instead (see [purgeStaleApks]) - an installer
+ * that still holds the URI would otherwise fail on a file we removed underneath it.
  *
  * The installer is always started by *this* app, never by system_server: the
  * FileProvider is not exported, so only its owner may hand its URIs out. A read
@@ -50,11 +67,29 @@ object InstallHandoff {
     const val NO_REQUEST = -1
 
     /**
-     * How long to keep checking `PackageManager` after the installer's UI closed:
-     * the package broadcast and the activity result can arrive in either order.
+     * An installer activity that ends this quickly cannot have been an install
+     * flow: the system cancels the activity result of a `singleInstance` /
+     * `singleTask` target the moment it is started (possibly after a slow cold
+     * start), and trampoline activities finish right after forwarding the URI to
+     * the component that really installs. Such an end is ignored, and the wait
+     * continues as if nothing had happened.
+     *
+     * The trade-off is deliberate: a user who really cancels within these seconds
+     * is not believed either, and the caller waits out the budget instead - an
+     * abandoned wait costs time, while a wrong verdict costs the install.
      */
-    private const val FLOW_END_GRACE_TICKS = 6
-    private const val FLOW_END_GRACE_INTERVAL_MS = 500L
+    private const val MIN_TRUSTED_FLOW_MS = 4_000L
+
+    /** How long to keep watching `PackageManager` after an installer reported its own outcome. */
+    private const val RESULT_GRACE_MS = 5_000L
+
+    /**
+     * How long to keep watching `PackageManager` after the installer's UI is gone
+     * without telling us anything. Installers that install from a background
+     * task (Shizuku/root sessions, a second activity) need this: their UI may be
+     * closed long before the package lands.
+     */
+    private const val FLOW_END_EXTRA_MS = 20_000L
 
     /** Default sink: logcat only. Callers inside a hooked process pass their own. */
     private val LOGCAT: (String) -> Unit = { Log.i(TAG, it) }
@@ -62,9 +97,174 @@ object InstallHandoff {
     /** Overall wait budget for an install, shared by both paths. */
     const val POLL_TIMEOUT_MS = 120_000L
 
+    /**
+     * Age after which a staged APK no longer counts as in use.
+     *
+     * A flow deletes its APK when the install is confirmed; when it cannot tell -
+     * the installer may still be reading the file - it leaves it behind, and this
+     * is what eventually reclaims it (see [purgeStaleApks]).
+     */
+    const val STALE_APK_AGE_MS = 30 * 60_000L
+
+    /** `Intent.EXTRA_INSTALL_RESULT` (@hide in the platform): stable string value. */
+    const val INSTALL_RESULT_EXTRA = "android.intent.extra.INSTALL_RESULT"
+
+    /**
+     * `PackageManager.INSTALL_SUCCEEDED`.
+     *
+     * Note the convention: the platform reports an install through
+     * [INSTALL_RESULT_EXTRA] with *PackageManager* codes - success is 1 and a
+     * failure is a negative `INSTALL_FAILED_*` (see AOSP's
+     * `PackageInstallerActivity`). `PackageInstaller.STATUS_*` looks similar but
+     * says the opposite for 1, so an app that reads the result the documented way
+     * would read it backwards if we answered in that convention.
+     */
+    const val INSTALL_RESULT_SUCCEEDED = 1
+
+    /** `PackageManager.INSTALL_FAILED_ABORTED`: the user cancelled, nothing was installed. */
+    const val INSTALL_RESULT_ABORTED = -115
+
+    /**
+     * How the installer's activity ended.
+     *
+     * [elapsedMs] is measured from the moment the APK was handed over and is what
+     * tells a real ending apart from a launch that never became a flow (see
+     * [MIN_TRUSTED_FLOW_MS]).
+     *
+     * [installResult] is [INSTALL_RESULT_EXTRA] as the installer set it, or null
+     * when it set nothing. Installers that honour `Intent.EXTRA_RETURN_RESULT`
+     * (InstallerX-Revived does) put the real outcome there, which is worth far
+     * more than "my activity finished".
+     */
+    data class FlowEnd(val elapsedMs: Long, val installResult: Int?)
+
+    /** How [awaitInstalled] ended. */
+    enum class WaitResult {
+        /** The package is installed at the expected version. */
+        INSTALLED,
+
+        /**
+         * The installer reported a failure code through [INSTALL_RESULT_EXTRA].
+         * It is done with the APK, whoever else may still be running.
+         */
+        FAILED,
+
+        /**
+         * The installer's UI is gone and the package did not land. This is a
+         * failure for the caller, but *not* proof that nothing will happen: an
+         * installer can install from a background task it started, so the APK is
+         * kept and reaped by age instead of deleted here.
+         */
+        NOT_INSTALLED,
+
+        /**
+         * The budget ran out while the installer was still open. The user may yet
+         * confirm it, so the APK must be kept until it does.
+         */
+        TIMED_OUT,
+    }
+
     /** The `content://` URI the installer receives for the APK at [apk]. */
     fun apkUri(apk: File): Uri =
         Uri.parse("content://$FILEPROVIDER_AUTHORITY/apks/${apk.name}")
+
+    /**
+     * Where staged APKs live - the directory the FileProvider serves from.
+     *
+     * It has to be this app's own cache: the module runs in system_server and
+     * SELinux denies it writes into another app's data directory, which is why
+     * [ApkStageProvider] does the copying in this process.
+     */
+    fun apkDir(context: Context): File = File(context.cacheDir, "apks")
+
+    /** File-name prefix shared by the staged copies of one install session. */
+    fun sessionPrefix(sessionId: Int): String = "session-$sessionId-"
+
+    /** What [purgeApks] removed. */
+    data class Purge(val deleted: Int, val total: Int, val bytes: Long) {
+        val ok: Boolean get() = deleted == total
+
+        val message: String get() = "$deleted/$total files ($bytes bytes)"
+    }
+
+    /**
+     * Deletes staged APKs.
+     *
+     * [sessionId] narrows the deletion to the copies made for one intercepted
+     * session (their names start with [sessionPrefix]), so cleaning up after an
+     * install cannot take the APK of one that is still running. Passing
+     * [ModuleLog.NO_SESSION] empties the directory, which is only safe when no
+     * flow can be running: a fresh process, or a module start.
+     */
+    fun purgeApks(context: Context, sessionId: Int = ModuleLog.NO_SESSION): Purge =
+        purge(context) { file ->
+            sessionId == ModuleLog.NO_SESSION || file.name.startsWith(sessionPrefix(sessionId))
+        }
+
+    /**
+     * Deletes staged APKs no flow can still be using, because they are older than
+     * [olderThanMs].
+     *
+     * This is the backstop for the endings where a flow deliberately keeps its APK
+     * (see [WaitResult.NOT_INSTALLED]): it runs at the start of the next flow, so
+     * leftovers never pile up while a *live* APK - always much younger than the
+     * cutoff - is never touched.
+     */
+    fun purgeStaleApks(
+        context: Context,
+        olderThanMs: Long = STALE_APK_AGE_MS,
+    ): Purge = purge(context) { file ->
+        System.currentTimeMillis() - file.lastModified() >= olderThanMs
+    }
+
+    private fun purge(context: Context, doomed: (File) -> Boolean): Purge {
+        val files = apkDir(context).listFiles().orEmpty().toList().filter(doomed)
+        val bytes = files.sumOf { it.length() }
+        val deleted = files.count { runCatching { it.delete() }.getOrDefault(false) }
+        return Purge(deleted, files.size, bytes)
+    }
+
+    /** Random token that keeps the names of two temp APKs apart. */
+    fun tempId(): String = Random.nextInt(0x100000, 0x1000000).toString(16)
+
+    /**
+     * Short, file-name-safe hint of [packageName]: its last segment, so
+     * `com.example.foo` becomes `foo`.
+     */
+    fun packageAbbrev(packageName: String?): String {
+        val last = packageName?.substringAfterLast('.')?.filter { it.isLetterOrDigit() }
+        return last?.lowercase()?.take(12)?.takeIf { it.isNotEmpty() } ?: "apk"
+    }
+
+    /**
+     * Name for one of our temporary APKs: what it belongs to ([prefix] is
+     * `session` for an intercepted install session and `install` for a
+     * redirected one), the session id when there is one, a hint of the package
+     * and a random token - unique per run and still readable in the Xposed log.
+     */
+    fun tempApkName(
+        prefix: String,
+        packageName: String?,
+        sessionId: Int = ModuleLog.NO_SESSION,
+        id: String = tempId(),
+    ): String = buildList {
+        add(prefix)
+        if (sessionId != ModuleLog.NO_SESSION) add(sessionId.toString())
+        if (packageName != null) add(packageAbbrev(packageName))
+        add(id)
+    }.joinToString("-") + ".apk"
+
+    /**
+     * Adds a hint of [packageName] to an existing temp APK name, for the flow
+     * that only learns the package after copying the file. Answers [file]
+     * unchanged when there is nothing to do.
+     */
+    fun renameTempApkWithPackage(file: File, packageName: String?): File {
+        if (packageName == null) return file
+        val base = file.name.removeSuffix(".apk")
+        val renamed = File(file.parentFile, "$base-${packageAbbrev(packageName)}.apk")
+        return if (runCatching { file.renameTo(renamed) }.getOrDefault(false)) renamed else file
+    }
 
     /**
      * Hands the APK at [apk] to [installer].
@@ -76,10 +276,15 @@ object InstallHandoff {
      * always lands - and because this app is the provider's owner, it is the only
      * one allowed to hand these URIs out at all.
      *
+     * The intents it tries for the installer - an `ACTION_VIEW` one first, because
+     * that is what the install apps in the wild declare, and the platform's own
+     * `ACTION_INSTALL_PACKAGE` as a fallback - are built in [installIntent], see
+     * [INSTALL_ACTIONS].
+     *
      * When [requestCode] is not [NO_REQUEST] the installer is started **for
      * result**, which is what tells the caller that the user closed the installer
-     * without installing anything. That is why `FLAG_ACTIVITY_NEW_TASK` is only
-     * added when the context is not an activity: it would break result delivery.
+     * without installing anything - but only when the installer's launch mode
+     * allows a result at all, see [MIN_TRUSTED_FLOW_MS].
      */
     fun launchInstaller(
         context: Context,
@@ -87,37 +292,71 @@ object InstallHandoff {
         installer: String,
         requestCode: Int = NO_REQUEST,
         log: (String) -> Unit = LOGCAT,
-    ): Boolean = try {
+    ): Boolean = runCatching {
         val uri = apkUri(apk)
         val granted = grantRead(context, uri, installer, log)
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, INSTALLER_VIEW_MIME)
-            .setPackage(installer)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         val forResult = requestCode != NO_REQUEST && context is Activity
-        if (!forResult) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Every candidate is resolved, so the log says what each action was worth,
+        // and the first one an installer answers is the one that gets started.
+        val chosen = INSTALL_ACTIONS
+            .mapNotNull { action ->
+                val intent = installIntent(action, uri, installer, forResult)
+                val target = context.packageManager
+                    .resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+                    ?.activityInfo?.name
+                log(
+                    "launchInstaller: installer=$installer action=$action uri=$uri " +
+                        "granted=$granted forResult=$forResult resolved=$target"
+                )
+                intent.takeIf { target != null }
+            }
+            .firstOrNull()
+        if (chosen == null) {
+            log(
+                "installer $installer answers none of $INSTALL_ACTIONS " +
+                    "for $INSTALLER_VIEW_MIME"
+            )
+            return@runCatching false
         }
-        val resolved =
-            context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        log(
-            "launchInstaller: installer=$installer uri=$uri granted=$granted " +
-                "forResult=$forResult resolved=$resolved"
-        )
-        if (resolved == null) {
-            log("installer $installer has no activity for ACTION_VIEW($INSTALLER_VIEW_MIME)")
-            return false
-        }
-        if (forResult) {
-            context.startActivityForResult(intent, requestCode)
-        } else {
-            context.startActivity(intent)
+        when {
+            forResult -> context.startActivityForResult(chosen, requestCode)
+            else -> context.startActivity(chosen)
         }
         true
-    } catch (t: Throwable) {
+    }.getOrElse { t ->
         log("launchInstaller failed for $installer: ${t.javaClass.simpleName}: ${t.message}")
         false
     }
+
+    /**
+     * The actions an installer is asked with, in the order they are tried.
+     *
+     * `ACTION_INSTALL_PACKAGE` is the platform's own install action and the one
+     * that carries the install-for-result contract; it is the fallback for the
+     * installers that only handle it.
+     */
+    private val INSTALL_ACTIONS = listOf(Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE)
+
+    /**
+     * One candidate for handing [uri] to [installer].
+     *
+     * `Intent.EXTRA_RETURN_RESULT` is set so an installer that honours the
+     * install-for-result contract reports the real outcome back to us instead of
+     * just finishing; the others ignore an extra that the platform's installer
+     * also sends. `FLAG_ACTIVITY_NEW_TASK` is only added when the intent cannot be
+     * started for result: it would break result delivery.
+     */
+    private fun installIntent(
+        action: String,
+        uri: Uri,
+        installer: String,
+        forResult: Boolean,
+    ): Intent = Intent(action)
+        .setDataAndType(uri, INSTALLER_VIEW_MIME)
+        .setPackage(installer)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        .putExtra(Intent.EXTRA_RETURN_RESULT, true)
+        .apply { if (!forResult) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
 
     /**
      * Grants [installer] read access to [uri] and reports whether
@@ -165,21 +404,25 @@ object InstallHandoff {
      * Waits until [pkg] is installed at [targetVersion] (a [targetVersion] of 0
      * matches any version).
      *
-     * Three things end the wait:
+     * What ends the wait:
      *  - the package appears in `PackageManager` (checked every tick and
-     *    immediately when a package broadcast arrives),
-     *  - [endSignal] fires - the caller does that when the installer's activity
-     *    finished, so there is nothing left to wait for and the answer is "not
-     *    installed" unless the package still shows up during the grace period,
-     *  - [POLL_TIMEOUT_MS] elapses, for installers that never report back.
+     *    immediately when a package broadcast arrives) -> [WaitResult.INSTALLED],
+     *  - the installer reported its own outcome through [endSignal] and the package
+     *    did not show up during the grace that follows -> [WaitResult.FAILED] when
+     *    it reported a code, [WaitResult.NOT_INSTALLED] when it reported nothing,
+     *  - [POLL_TIMEOUT_MS] elapses -> [WaitResult.TIMED_OUT].
+     *
+     * An [endSignal] that arrives too early to be an install flow ending is
+     * ignored - see [MIN_TRUSTED_FLOW_MS] - and the wait then lasts until the
+     * package appears or the budget runs out.
      */
     suspend fun awaitInstalled(
         context: Context,
         pkg: String,
         targetVersion: Long,
-        endSignal: Channel<Unit>? = null,
+        endSignal: Channel<FlowEnd>? = null,
         log: (String) -> Unit = LOGCAT,
-    ): Boolean {
+    ): WaitResult {
         val events = Channel<Unit>(Channel.CONFLATED)
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
@@ -212,42 +455,57 @@ object InstallHandoff {
         }
         try {
             val deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS
+            // Set once the installer's activity ended in a way we trust: from then
+            // on the wait is bounded by this instead of the full budget.
+            var verdictAt: Long? = null
+            var reportedFailure = false
             var i = 0
-            while (System.currentTimeMillis() < deadline) {
-                if (isInstalled(context, pkg, targetVersion)) return true
-                if (endSignal?.tryReceive()?.isSuccess == true) {
-                    return confirmAfterFlowEnd(context, pkg, targetVersion, log)
+            while (true) {
+                if (isInstalled(context, pkg, targetVersion)) return WaitResult.INSTALLED
+                val end = endSignal?.tryReceive()?.getOrNull()
+                if (end != null) {
+                    if (end.installResult == null && end.elapsedMs < MIN_TRUSTED_FLOW_MS) {
+                        log(
+                            "installer activity ended after ${end.elapsedMs}ms with no result " +
+                                "(singleInstance/singleTask launch or a trampoline); ignoring it"
+                        )
+                    } else {
+                        val grace = if (end.installResult != null) {
+                            RESULT_GRACE_MS
+                        } else {
+                            FLOW_END_EXTRA_MS
+                        }
+                        reportedFailure = end.installResult != null
+                        verdictAt = System.currentTimeMillis() + grace
+                        log(
+                            "installer activity ended after ${end.elapsedMs}ms " +
+                                "(result=${end.installResult}); giving $pkg ${grace}ms more"
+                        )
+                    }
+                }
+                val now = System.currentTimeMillis()
+                val verdict = verdictAt
+                if (verdict != null && now >= verdict) {
+                    return if (reportedFailure) {
+                        log("installer reported a failure and $pkg did not land")
+                        WaitResult.FAILED
+                    } else {
+                        log("installer's UI is gone and $pkg did not land (it may still install)")
+                        WaitResult.NOT_INSTALLED
+                    }
+                }
+                if (now >= deadline) {
+                    log("wait timed out for $pkg (installer may still be open)")
+                    return WaitResult.TIMED_OUT
                 }
                 log("wait #${i++}: not installed yet")
                 // receiveCatching() makes a closed channel non-fatal.
                 withTimeoutOrNull(POLL_INTERVAL_MS) { events.receiveCatching() }
             }
-            log("wait timed out for $pkg")
-            return false
         } finally {
             if (registered) runCatching { context.unregisterReceiver(receiver) }
             events.close()
         }
-    }
-
-    /**
-     * The installer's UI is gone: the user either installed the package or closed
-     * the installer. `PackageManager` may lag the activity result, so keep
-     * looking for a moment before calling it a failure.
-     */
-    private suspend fun confirmAfterFlowEnd(
-        context: Context,
-        pkg: String,
-        targetVersion: Long,
-        log: (String) -> Unit,
-    ): Boolean {
-        log("installer flow ended; re-checking $pkg")
-        repeat(FLOW_END_GRACE_TICKS) {
-            if (isInstalled(context, pkg, targetVersion)) return true
-            delay(FLOW_END_GRACE_INTERVAL_MS.milliseconds)
-        }
-        log("installer flow ended without installing $pkg")
-        return false
     }
 
     private suspend fun isInstalled(context: Context, pkg: String, targetVersion: Long): Boolean {
