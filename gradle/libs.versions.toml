@@ -1,7 +1,7 @@
 [versions]
-agp = "9.4.0"
-kotlin = "2.4.20"
-coreKtx = "1.19.0"
+agp = "9.4.1"
+kotlin = "2.4.21"
+coreKtx = "1.19.1"
 appcompat = "1.8.0"
 lifecycleRuntimeKtx = "2.11.0"
 activityCompose = "1.13.0"
@@ -9,12 +9,12 @@ coroutines = "1.11.0"
 # compose-bom-alpha exposes the Material 3 Expressive APIs (MaterialExpressiveTheme,
 # MotionScheme, ...) as public/experimental. The stable compose-bom of the same
 # version keeps them `internal`, so we use the alpha channel to enable Expressive.
-composeBom = "2026.08.01"
+composeBom = "2026.09.01"
 libxposed = "102.0.0"
 licensee = "1.14.1"
 # play-services-base exposes GoogleApiAvailabilityLight, used to detect whether
 # Google Play services is installed before installing any hook.
-playServicesBase = "18.10.1"
+playServicesBase = "18.11.1"
 # Baseline/Startup profile generation toolchain.
 benchmark = "1.5.0"
 baselineProfile = "1.5.0"

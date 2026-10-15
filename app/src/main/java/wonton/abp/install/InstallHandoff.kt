@@ -331,10 +331,12 @@ object InstallHandoff {
     /**
      * The actions an installer is asked with, in the order they are tried.
      *
-     * `ACTION_INSTALL_PACKAGE` is the platform's own install action and the one
-     * that carries the install-for-result contract; it is the fallback for the
-     * installers that only handle it.
+     * `ACTION_VIEW` is what the install apps in the wild declare. The platform
+     * deprecated `ACTION_INSTALL_PACKAGE` (Android 17), but some installers still
+     * answer nothing else, and we only ever hand it to another app - we never
+     * install anything ourselves - so it stays as the fallback.
      */
+    @Suppress("DEPRECATION")
     private val INSTALL_ACTIONS = listOf(Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE)
 
     /**
