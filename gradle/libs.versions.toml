@@ -19,7 +19,7 @@ playServicesBase = "18.11.1"
 benchmark = "1.5.0"
 baselineProfile = "1.5.0"
 junitExt = "1.3.0"
-uiautomator = "2.4.0"
+uiautomator = "2.4.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
